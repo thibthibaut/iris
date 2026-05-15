@@ -11,6 +11,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 heic = "0.1.4"
 image = "0.25.9"
+indicatif = "0.18.4"
 imageproc = "0.25"
 isocountry = "0.3.2"
 kamadak-exif = "0.6"

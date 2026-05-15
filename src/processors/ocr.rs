@@ -3,8 +3,12 @@ use ocr_rs::{OcrEngine, OcrEngineConfig};
 use tracing::{info, warn};
 
 use crate::{
-    app::AppContext, image_io::open_image, models::OcrResult,
-    processors::image_quality::screenshot_score, text::cleanup_text, traits::BatchProcessor,
+    app::AppContext,
+    image_io::open_image,
+    models::OcrResult,
+    processors::{image_quality::screenshot_score, progress},
+    text::cleanup_text,
+    traits::BatchProcessor,
 };
 
 pub struct LazyOcrProcessor;
@@ -16,6 +20,7 @@ impl BatchProcessor for LazyOcrProcessor {
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
         let photos = ctx.db.photos_pending_ocr(ctx.effective_limit())?;
+        let pb = progress::bar(photos.len(), "ocr");
         let engine = OcrEngine::new(
             ctx.config.ocr_models_dir.join("PP-OCRv5_mobile_det.mnn"),
             ctx.config
@@ -38,6 +43,7 @@ impl BatchProcessor for LazyOcrProcessor {
                     failed += 1;
                     ctx.db.mark_ocr_failed(photo.id)?;
                     warn!(path = %photo.path, %error, "failed to decode image for OCR");
+                    pb.inc(1);
                     continue;
                 }
             };
@@ -45,6 +51,7 @@ impl BatchProcessor for LazyOcrProcessor {
             if screenshot_score(&img) < ctx.config.ocr_edge_density_threshold {
                 skipped += 1;
                 ctx.db.mark_ocr_skipped(photo.id)?;
+                pb.inc(1);
                 continue;
             }
 
@@ -74,7 +81,10 @@ impl BatchProcessor for LazyOcrProcessor {
                     warn!(path = %photo.path, %error, "OCR failed");
                 }
             }
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(
             processor = self.name(),

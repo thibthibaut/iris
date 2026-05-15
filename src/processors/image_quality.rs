@@ -3,7 +3,10 @@ use image::{DynamicImage, imageops::FilterType};
 use imageproc::gradients::{horizontal_sobel, vertical_sobel};
 use tracing::{info, warn};
 
-use crate::{app::AppContext, image_io::open_image, models::ImageQuality, traits::BatchProcessor};
+use crate::{
+    app::AppContext, image_io::open_image, models::ImageQuality, processors::progress,
+    traits::BatchProcessor,
+};
 
 pub struct QualityProcessor;
 
@@ -14,6 +17,7 @@ impl BatchProcessor for QualityProcessor {
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
         let photos = ctx.db.photos_missing_quality(ctx.effective_limit())?;
+        let pb = progress::bar(photos.len(), "quality");
         let mut done = 0;
         let mut failed = 0;
 
@@ -29,7 +33,10 @@ impl BatchProcessor for QualityProcessor {
                     warn!(path = %photo.path, %error, "failed to compute quality");
                 }
             }
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(processor = self.name(), done, failed, "quality completed");
         Ok(())

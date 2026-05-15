@@ -4,6 +4,7 @@ mod geo;
 mod image_quality;
 mod metadata;
 mod ocr;
+mod progress;
 
 use anyhow::Result;
 

@@ -4,7 +4,10 @@ use anyhow::Result;
 use exif::{In, Reader, Tag, Value};
 use tracing::{info, warn};
 
-use crate::{app::AppContext, image_io::open_image, models::PhotoMetadata, traits::BatchProcessor};
+use crate::{
+    app::AppContext, image_io::open_image, models::PhotoMetadata, processors::progress,
+    traits::BatchProcessor,
+};
 
 pub struct MetadataProcessor;
 
@@ -15,6 +18,7 @@ impl BatchProcessor for MetadataProcessor {
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
         let photos = ctx.db.photos_missing_metadata(ctx.effective_limit())?;
+        let pb = progress::bar(photos.len(), "metadata");
         let mut done = 0;
         let mut failed = 0;
 
@@ -30,7 +34,10 @@ impl BatchProcessor for MetadataProcessor {
                     warn!(path = %photo.path, %error, "failed to extract metadata");
                 }
             }
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(processor = self.name(), done, failed, "metadata completed");
         Ok(())

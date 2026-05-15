@@ -1766,6 +1766,7 @@ dependencies = [
  "heic",
  "image",
  "imageproc",
+ "indicatif",
  "isocountry",
  "kamadak-exif",
  "ocr-rs",

@@ -9,6 +9,7 @@ use crate::{
     hash::blake3_file,
     image_io::{ensure_supported, is_supported_image_path},
     models::NewPhoto,
+    processors::progress,
     traits::BatchProcessor,
 };
 
@@ -30,10 +31,13 @@ impl BatchProcessor for DiscoveryProcessor {
     fn run(&self, ctx: &AppContext) -> Result<()> {
         let scan_id = ctx.db.begin_scan()?;
         let mut stats = ScanStats::default();
+        let pb = progress::spinner("scan");
 
         for root in &ctx.config.library_paths {
-            scan_root(ctx, scan_id, root, &mut stats)?;
+            scan_root(ctx, scan_id, root, &mut stats, &pb)?;
         }
+
+        pb.finish_and_clear();
 
         let missing = ctx.db.mark_missing_not_seen(scan_id)?;
         ctx.db.finish_scan(scan_id)?;
@@ -54,7 +58,13 @@ impl BatchProcessor for DiscoveryProcessor {
     }
 }
 
-fn scan_root(ctx: &AppContext, scan_id: i64, root: &Path, stats: &mut ScanStats) -> Result<()> {
+fn scan_root(
+    ctx: &AppContext,
+    scan_id: i64,
+    root: &Path,
+    stats: &mut ScanStats,
+    pb: &indicatif::ProgressBar,
+) -> Result<()> {
     if !root.exists() {
         warn!(path = %root.display(), "library path does not exist");
         return Ok(());
@@ -81,6 +91,7 @@ fn scan_root(ctx: &AppContext, scan_id: i64, root: &Path, stats: &mut ScanStats)
         }
 
         stats.scanned += 1;
+        pb.inc(1);
         if let Err(error) = process_file(ctx, scan_id, entry.path(), stats) {
             stats.failed += 1;
             warn!(path = %entry.path().display(), %error, "failed to scan image");

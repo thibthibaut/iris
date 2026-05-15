@@ -3,7 +3,7 @@ use isocountry::CountryCode;
 use reverse_geocoder::{Record, ReverseGeocoder};
 use tracing::info;
 
-use crate::{app::AppContext, models::GeoLocation, traits::BatchProcessor};
+use crate::{app::AppContext, models::GeoLocation, processors::progress, traits::BatchProcessor};
 
 pub struct ReverseGeoProcessor;
 
@@ -14,6 +14,7 @@ impl BatchProcessor for ReverseGeoProcessor {
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
         let candidates = ctx.db.photos_missing_geo(ctx.effective_limit())?;
+        let pb = progress::bar(candidates.len(), "geo");
         let geocoder = ReverseGeocoder::new();
         let mut done = 0;
 
@@ -22,7 +23,10 @@ impl BatchProcessor for ReverseGeoProcessor {
             let location = location_from_record(result.record);
             ctx.db.save_geo_location(candidate.id, &location)?;
             done += 1;
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(processor = self.name(), done, "reverse geocoding completed");
         Ok(())

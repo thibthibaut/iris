@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use open_clip_inference::{TextEmbedder, VisionEmbedder};
 use tracing::{info, warn};
 
-use crate::{app::AppContext, image_io::open_image, traits::BatchProcessor};
+use crate::{app::AppContext, image_io::open_image, processors::progress, traits::BatchProcessor};
 
 const MOBILE_CLIP_MODEL_ID: &str = "RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX";
 
@@ -18,6 +18,7 @@ impl BatchProcessor for ImageEmbeddingProcessor {
         let photos = ctx
             .db
             .photos_missing_image_embedding(ctx.effective_limit())?;
+        let pb = progress::bar(photos.len(), "image embeddings");
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let embedder = runtime
             .block_on(VisionEmbedder::from_hf(MOBILE_CLIP_MODEL_ID).build())
@@ -47,7 +48,10 @@ impl BatchProcessor for ImageEmbeddingProcessor {
                     warn!(path = %photo.path, %error, "image embedding failed");
                 }
             }
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(
             processor = self.name(),
@@ -66,6 +70,7 @@ impl BatchProcessor for OcrTextEmbeddingProcessor {
         let photos = ctx
             .db
             .photos_missing_ocr_text_embedding(ctx.effective_limit())?;
+        let pb = progress::bar(photos.len(), "text embeddings");
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let embedder = runtime
             .block_on(TextEmbedder::from_hf(MOBILE_CLIP_MODEL_ID).build())
@@ -94,7 +99,10 @@ impl BatchProcessor for OcrTextEmbeddingProcessor {
                     warn!(path = %photo.path, %error, "OCR text embedding failed");
                 }
             }
+            pb.inc(1);
         }
+
+        pb.finish_and_clear();
 
         info!(
             processor = self.name(),
