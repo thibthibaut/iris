@@ -1,0 +1,30 @@
+[package]
+name = "iris"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+bytemuck = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+heic = "0.1.4"
+image = "0.25.9"
+imageproc = "0.25"
+isocountry = "0.3.2"
+kamadak-exif = "0.6"
+ocr-rs = "2.2.2"
+open_clip_inference = "0.4.0"
+reverse_geocoder = "4.1.1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+sqlite-vec = "=0.1.9"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,621 @@
+mod schema;
+
+use std::{cell::RefCell, path::Path};
+
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::models::{
+    GeoCandidate, GeoLocation, ImageQuality, NewPhoto, OcrResult, Photo, PhotoMetadata,
+};
+
+#[derive(Debug, Clone)]
+pub struct PhotoRow {
+    pub id: i64,
+    pub path: String,
+    pub file_size: i64,
+    pub modified_at_unix: i64,
+    pub missing: bool,
+    pub quality_score: Option<f64>,
+    pub ocr_status: String,
+    pub has_image_embedding: bool,
+    pub has_ocr_text_embedding: bool,
+    pub geo_label: Option<String>,
+}
+
+pub struct Database {
+    conn: RefCell<Connection>,
+    embedding_dimensions: usize,
+}
+
+impl Database {
+    pub fn open(path: &Path, embedding_dimensions: usize) -> Result<Self> {
+        register_sqlite_vec();
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open database {}", path.display()))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        schema::initialize(&conn, embedding_dimensions)?;
+        Ok(Self {
+            conn: RefCell::new(conn),
+            embedding_dimensions,
+        })
+    }
+
+    pub fn begin_scan(&self) -> Result<i64> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.borrow().execute(
+            "INSERT INTO scan_runs(started_at_unix) VALUES (?)",
+            params![now],
+        )?;
+        Ok(self.conn.borrow().last_insert_rowid())
+    }
+
+    pub fn finish_scan(&self, scan_id: i64) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.borrow().execute(
+            "UPDATE scan_runs SET finished_at_unix = ? WHERE id = ?",
+            params![now, scan_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn photo_file_state(&self, path: &str) -> Result<Option<(i64, i64, i64)>> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT id, file_size, modified_at_unix FROM photos WHERE path = ?",
+                params![path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .context("failed to read photo file state")
+    }
+
+    pub fn upsert_photo(&self, input: &NewPhoto, scan_id: i64) -> Result<i64> {
+        self.conn.borrow().execute(
+            r#"
+INSERT INTO photos(path, blake3_hash, file_size, modified_at_unix, missing, last_seen_scan_id, last_scanned_at_unix)
+VALUES (?, ?, ?, ?, 0, ?, strftime('%s','now'))
+ON CONFLICT(path) DO UPDATE SET
+  blake3_hash = excluded.blake3_hash,
+  file_size = excluded.file_size,
+  modified_at_unix = excluded.modified_at_unix,
+  missing = 0,
+  last_seen_scan_id = excluded.last_seen_scan_id,
+  last_scanned_at_unix = excluded.last_scanned_at_unix,
+  taken_at = NULL,
+  gps_lat = NULL,
+  gps_lon = NULL,
+  geo_city = NULL,
+  geo_region = NULL,
+  geo_country = NULL,
+  geo_country_code = NULL,
+  geo_label = NULL,
+  camera_model = NULL,
+  orientation = NULL,
+  width = NULL,
+  height = NULL,
+  blur_score = NULL,
+  exposure_score = NULL,
+  screenshot_score = NULL,
+  quality_score = NULL,
+  ocr_status = 'pending',
+  ocr_raw_text = NULL,
+  ocr_cleaned_text = NULL,
+  ocr_confidence = NULL
+"#,
+            params![
+                input.path,
+                input.blake3_hash,
+                input.file_size,
+                input.modified_at_unix,
+                scan_id
+            ],
+        )?;
+        let photo_id = self.photo_id_by_path(&input.path)?;
+        self.delete_embeddings(photo_id)?;
+        Ok(photo_id)
+    }
+
+    pub fn mark_seen_unchanged(&self, photo_id: i64, scan_id: i64) -> Result<()> {
+        self.conn.borrow().execute(
+            r#"
+UPDATE photos
+SET missing = 0, last_seen_scan_id = ?, last_scanned_at_unix = strftime('%s','now')
+WHERE id = ?
+"#,
+            params![scan_id, photo_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_missing_not_seen(&self, scan_id: i64) -> Result<usize> {
+        let changed = self.conn.borrow().execute(
+            "UPDATE photos SET missing = 1 WHERE last_seen_scan_id IS NULL OR last_seen_scan_id <> ?",
+            params![scan_id],
+        )?;
+        Ok(changed)
+    }
+
+    pub fn photos_missing_metadata(&self, limit: usize) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND (width IS NULL OR height IS NULL) ORDER BY id LIMIT ?",
+            limit,
+        )
+    }
+
+    pub fn photos_missing_quality(&self, limit: usize) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND quality_score IS NULL ORDER BY id LIMIT ?",
+            limit,
+        )
+    }
+
+    pub fn photos_missing_image_embedding(&self, limit: usize) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND NOT EXISTS (SELECT 1 FROM vec_image_embeddings WHERE rowid = photos.id) ORDER BY id LIMIT ?",
+            limit,
+        )
+    }
+
+    pub fn photos_pending_ocr(&self, limit: usize) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND ocr_status = 'pending' ORDER BY id LIMIT ?",
+            limit,
+        )
+    }
+
+    pub fn photos_missing_geo(&self, limit: usize) -> Result<Vec<GeoCandidate>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT id, gps_lat, gps_lon
+FROM photos
+WHERE missing = 0
+  AND gps_lat IS NOT NULL
+  AND gps_lon IS NOT NULL
+  AND geo_label IS NULL
+ORDER BY id
+LIMIT ?
+"#,
+        )?;
+        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+            Ok(GeoCandidate {
+                id: row.get(0)?,
+                gps_lat: row.get(1)?,
+                gps_lon: row.get(2)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read geo candidates")
+    }
+
+    pub fn photos_missing_ocr_text_embedding(&self, limit: usize) -> Result<Vec<(Photo, String)>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT id, blake3_hash, path, width, height, ocr_cleaned_text
+FROM photos
+WHERE missing = 0
+  AND ocr_status = 'done'
+  AND ocr_cleaned_text IS NOT NULL
+  AND ocr_cleaned_text <> ''
+  AND NOT EXISTS (SELECT 1 FROM vec_ocr_text_embeddings WHERE rowid = photos.id)
+ORDER BY id
+LIMIT ?
+"#,
+        )?;
+        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+            Ok((
+                Photo {
+                    id: row.get(0)?,
+                    blake3_hash: row.get(1)?,
+                    path: row.get(2)?,
+                    width: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                    height: row.get::<_, Option<i64>>(4)?.map(|v| v as u32),
+                },
+                row.get(5)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read OCR text embedding candidates")
+    }
+
+    pub fn save_metadata(&self, photo_id: i64, metadata: &PhotoMetadata) -> Result<()> {
+        self.conn.borrow().execute(
+            r#"
+UPDATE photos SET
+  taken_at = ?, gps_lat = ?, gps_lon = ?, camera_model = ?, orientation = ?, width = ?, height = ?
+WHERE id = ?
+"#,
+            params![
+                metadata.taken_at,
+                metadata.gps_lat,
+                metadata.gps_lon,
+                metadata.camera_model,
+                metadata.orientation,
+                metadata.width.map(i64::from),
+                metadata.height.map(i64::from),
+                photo_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_geo_location(&self, photo_id: i64, location: &GeoLocation) -> Result<()> {
+        self.conn.borrow().execute(
+            r#"
+UPDATE photos SET
+  geo_city = ?, geo_region = ?, geo_country = ?, geo_country_code = ?, geo_label = ?
+WHERE id = ?
+"#,
+            params![
+                location.city,
+                location.region,
+                location.country,
+                location.country_code,
+                location.label,
+                photo_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_quality(&self, photo_id: i64, quality: &ImageQuality) -> Result<()> {
+        self.conn.borrow().execute(
+            r#"
+UPDATE photos SET
+  blur_score = ?, exposure_score = ?, screenshot_score = ?, quality_score = ?
+WHERE id = ?
+"#,
+            params![
+                quality.tenengrad_sharpness,
+                quality.exposure_score,
+                quality.screenshot_score,
+                quality.quality_score,
+                photo_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_ocr_result(&self, photo_id: i64, result: &OcrResult) -> Result<()> {
+        self.conn.borrow().execute(
+            r#"
+UPDATE photos SET ocr_status = 'done', ocr_raw_text = ?, ocr_cleaned_text = ?, ocr_confidence = ?
+WHERE id = ?
+"#,
+            params![
+                result.raw_text,
+                result.cleaned_text,
+                result.confidence,
+                photo_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_ocr_skipped(&self, photo_id: i64) -> Result<()> {
+        self.conn.borrow().execute(
+            "UPDATE photos SET ocr_status = 'skipped' WHERE id = ?",
+            params![photo_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_ocr_failed(&self, photo_id: i64) -> Result<()> {
+        self.conn.borrow().execute(
+            "UPDATE photos SET ocr_status = 'failed' WHERE id = ?",
+            params![photo_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_image_embedding(&self, photo_id: i64, embedding: &[f32]) -> Result<()> {
+        self.save_vec_embedding("vec_image_embeddings", photo_id, embedding)
+    }
+
+    pub fn save_ocr_text_embedding(&self, photo_id: i64, embedding: &[f32]) -> Result<()> {
+        self.save_vec_embedding("vec_ocr_text_embeddings", photo_id, embedding)
+    }
+
+    pub fn stats(&self) -> Result<(i64, i64)> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT COUNT(*), SUM(CASE WHEN missing THEN 1 ELSE 0 END) FROM photos",
+                [],
+                |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+            )
+            .context("failed to read stats")
+    }
+
+    pub fn photo_rows(&self, limit: usize) -> Result<Vec<PhotoRow>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT
+  photos.id,
+  photos.path,
+  photos.file_size,
+  photos.modified_at_unix,
+  photos.missing,
+  photos.quality_score,
+  photos.ocr_status,
+  photos.geo_label,
+  EXISTS(SELECT 1 FROM vec_image_embeddings WHERE rowid = photos.id),
+  EXISTS(SELECT 1 FROM vec_ocr_text_embeddings WHERE rowid = photos.id)
+FROM photos
+ORDER BY photos.id
+LIMIT ?
+"#,
+        )?;
+
+        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+            Ok(PhotoRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                file_size: row.get(2)?,
+                modified_at_unix: row.get(3)?,
+                missing: row.get::<_, i64>(4)? != 0,
+                quality_score: row.get(5)?,
+                ocr_status: row.get(6)?,
+                geo_label: row.get(7)?,
+                has_image_embedding: row.get::<_, i64>(8)? != 0,
+                has_ocr_text_embedding: row.get::<_, i64>(9)? != 0,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to inspect photo rows")
+    }
+
+    fn photo_id_by_path(&self, path: &str) -> Result<i64> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT id FROM photos WHERE path = ?",
+                params![path],
+                |row| row.get(0),
+            )
+            .context("failed to read photo id")
+    }
+
+    fn query_photos(&self, sql: &str, limit: usize) -> Result<Vec<Photo>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+            Ok(Photo {
+                id: row.get(0)?,
+                blake3_hash: row.get(1)?,
+                path: row.get(2)?,
+                width: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                height: row.get::<_, Option<i64>>(4)?.map(|v| v as u32),
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to query photos")
+    }
+
+    fn save_vec_embedding(&self, table: &str, photo_id: i64, embedding: &[f32]) -> Result<()> {
+        anyhow::ensure!(
+            embedding.len() == self.embedding_dimensions,
+            "embedding dimension mismatch: expected {}, got {}",
+            self.embedding_dimensions,
+            embedding.len()
+        );
+        let bytes = bytemuck::cast_slice(embedding);
+        let sql = format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?, ?)");
+        self.conn.borrow().execute(&sql, params![photo_id, bytes])?;
+        Ok(())
+    }
+
+    fn delete_embeddings(&self, photo_id: i64) -> Result<()> {
+        self.conn.borrow().execute(
+            "DELETE FROM vec_image_embeddings WHERE rowid = ?",
+            params![photo_id],
+        )?;
+        self.conn.borrow().execute(
+            "DELETE FROM vec_ocr_text_embeddings WHERE rowid = ?",
+            params![photo_id],
+        )?;
+        Ok(())
+    }
+}
+
+fn register_sqlite_vec() {
+    type SqliteExtensionEntry = unsafe extern "C" fn(
+        *mut rusqlite::ffi::sqlite3,
+        *mut *const std::os::raw::c_char,
+        *const rusqlite::ffi::sqlite3_api_routines,
+    ) -> std::os::raw::c_int;
+
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            SqliteExtensionEntry,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
+        )));
+    }
+}
+
+fn limit_i64(limit: usize) -> Result<i64> {
+    i64::try_from(limit).context("limit is too large")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_missing_without_deleting() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        db.upsert_photo(
+            &NewPhoto {
+                path: "/tmp/a.jpg".into(),
+                blake3_hash: "abc".into(),
+                file_size: 1,
+                modified_at_unix: 2,
+            },
+            scan_id,
+        )
+        .unwrap();
+        db.finish_scan(scan_id).unwrap();
+
+        let scan_id = db.begin_scan().unwrap();
+        assert_eq!(db.mark_missing_not_seen(scan_id).unwrap(), 1);
+        let (total, missing) = db.stats().unwrap();
+        assert_eq!((total, missing), (1, 1));
+    }
+
+    #[test]
+    fn rejects_wrong_embedding_dimension() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = db
+            .upsert_photo(
+                &NewPhoto {
+                    path: "/tmp/a.jpg".into(),
+                    blake3_hash: "abc".into(),
+                    file_size: 1,
+                    modified_at_unix: 2,
+                },
+                scan_id,
+            )
+            .unwrap();
+
+        assert!(db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0]).is_err());
+        assert!(
+            db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn image_embedding_presence_controls_candidates() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = db
+            .upsert_photo(
+                &NewPhoto {
+                    path: "/tmp/a.jpg".into(),
+                    blake3_hash: "abc".into(),
+                    file_size: 1,
+                    modified_at_unix: 2,
+                },
+                scan_id,
+            )
+            .unwrap();
+
+        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 1);
+        db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+            .unwrap();
+        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn changed_file_resets_derived_data_and_embeddings() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = db
+            .upsert_photo(
+                &NewPhoto {
+                    path: "/tmp/a.jpg".into(),
+                    blake3_hash: "abc".into(),
+                    file_size: 1,
+                    modified_at_unix: 2,
+                },
+                scan_id,
+            )
+            .unwrap();
+
+        db.save_metadata(
+            photo_id,
+            &PhotoMetadata {
+                taken_at: None,
+                gps_lat: None,
+                gps_lon: None,
+                camera_model: None,
+                orientation: None,
+                width: Some(10),
+                height: Some(10),
+            },
+        )
+        .unwrap();
+        db.save_quality(
+            photo_id,
+            &ImageQuality {
+                tenengrad_sharpness: 1.0,
+                exposure_score: 1.0,
+                screenshot_score: 0.0,
+                quality_score: 1.0,
+            },
+        )
+        .unwrap();
+        db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+            .unwrap();
+
+        db.upsert_photo(
+            &NewPhoto {
+                path: "/tmp/a.jpg".into(),
+                blake3_hash: "def".into(),
+                file_size: 2,
+                modified_at_unix: 3,
+            },
+            scan_id,
+        )
+        .unwrap();
+
+        assert_eq!(db.photos_missing_metadata(10).unwrap().len(), 1);
+        assert_eq!(db.photos_missing_quality(10).unwrap().len(), 1);
+        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn geo_presence_controls_candidates() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = db
+            .upsert_photo(
+                &NewPhoto {
+                    path: "/tmp/a.jpg".into(),
+                    blake3_hash: "abc".into(),
+                    file_size: 1,
+                    modified_at_unix: 2,
+                },
+                scan_id,
+            )
+            .unwrap();
+        db.save_metadata(
+            photo_id,
+            &PhotoMetadata {
+                taken_at: None,
+                gps_lat: Some(48.8566),
+                gps_lon: Some(2.3522),
+                camera_model: None,
+                orientation: None,
+                width: Some(10),
+                height: Some(10),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(db.photos_missing_geo(10).unwrap().len(), 1);
+        db.save_geo_location(
+            photo_id,
+            &GeoLocation {
+                city: Some("Paris".into()),
+                region: Some("Ile-de-France".into()),
+                country: Some("France".into()),
+                country_code: Some("FR".into()),
+                label: Some("Paris, Ile-de-France, France".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(db.photos_missing_geo(10).unwrap().len(), 0);
+    }
+}

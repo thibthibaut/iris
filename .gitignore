@@ -1,0 +1,8 @@
+/target
+iris.db
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+Photos/
+models/
