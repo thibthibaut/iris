@@ -41,6 +41,7 @@ Required crates:
 - `heic` to deal with HEIC images
 - `reverse_geocoder` for offline reverse geocoding
 - `isocountry` for country names from ISO country codes
+- `face_id` for face detection and face embeddings
 
 Use `sqlite-vec` from:
 https://github.com/asg017/sqlite-vec
@@ -354,11 +355,12 @@ cargo run -- scan
 cargo run -- metadata
 cargo run -- geo
 cargo run -- embed
+cargo run -- faces
 cargo run -- ocr
 cargo run -- quality
 cargo run -- all
 
-all is doing scan -> metadata -> geo -> quality -> embeddings -> lazy OCR
+all is doing scan -> metadata -> geo -> quality -> embeddings -> faces -> lazy OCR
 
 You are in a test environement with a Photos/ directory containing a few of them. Bear in mind that in reallity I need to index 30000 pictures.
 
@@ -509,6 +511,7 @@ pub fn run_all(ctx: &AppContext) -> anyhow::Result<()> {
     geo::run(ctx)?;
     image_quality::run(ctx)?;
     embeddings::run_image_embeddings(ctx)?;
+    faces::run(ctx)?;
     ocr::run_lazy_ocr(ctx)?;
     embeddings::run_ocr_text_embeddings(ctx)?;
     Ok(())

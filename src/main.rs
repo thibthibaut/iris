@@ -18,8 +18,8 @@ use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::db::Database;
 use crate::processors::{
-    DiscoveryProcessor, ImageEmbeddingProcessor, LazyOcrProcessor, MetadataProcessor,
-    OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor, run_all,
+    DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor, LazyOcrProcessor,
+    MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor, run_all,
 };
 use crate::traits::BatchProcessor;
 
@@ -42,6 +42,7 @@ fn main() -> Result<()> {
             ImageEmbeddingProcessor.run(&ctx)?;
             OcrTextEmbeddingProcessor.run(&ctx)
         }
+        Command::Faces => FaceEmbeddingProcessor.run(&ctx),
         Command::Ocr => LazyOcrProcessor.run(&ctx),
         Command::ShowDb => show_db(&ctx),
         Command::All => run_all(&ctx),
@@ -52,14 +53,14 @@ fn show_db(ctx: &AppContext) -> Result<()> {
     let rows = ctx.db.photo_rows(ctx.effective_limit())?;
 
     println!(
-        "{:<5} {:<7} {:<10} {:<10} {:<8} {:<8} {:<7} {:<7} {:<28} path",
-        "id", "missing", "size", "mtime", "quality", "ocr", "imgvec", "txtvec", "geo"
+        "{:<5} {:<7} {:<10} {:<10} {:<8} {:<8} {:<7} {:<7} {:<5} {:<28} path",
+        "id", "missing", "size", "mtime", "quality", "ocr", "imgvec", "txtvec", "faces", "geo"
     );
     println!("{}", "-".repeat(128));
 
     for row in rows {
         println!(
-            "{:<5} {:<7} {:<10} {:<10} {:<8} {:<8} {:<7} {:<7} {:<28} {}",
+            "{:<5} {:<7} {:<10} {:<10} {:<8} {:<8} {:<7} {:<7} {:<5} {:<28} {}",
             row.id,
             row.missing,
             row.file_size,
@@ -68,6 +69,7 @@ fn show_db(ctx: &AppContext) -> Result<()> {
             row.ocr_status,
             embedding_label(row.has_image_embedding),
             embedding_label(row.has_ocr_text_embedding),
+            row.face_count,
             trim_display(row.geo_label.as_deref().unwrap_or("-"), 28),
             row.path,
         );

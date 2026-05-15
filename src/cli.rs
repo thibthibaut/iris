@@ -22,6 +22,7 @@ pub enum Command {
     Geo,
     Quality,
     Embed,
+    Faces,
     Ocr,
     ShowDb,
     All,

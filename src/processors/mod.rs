@@ -1,5 +1,6 @@
 mod discovery;
 mod embeddings;
+mod faces;
 mod geo;
 mod image_quality;
 mod metadata;
@@ -12,6 +13,7 @@ use crate::{app::AppContext, traits::BatchProcessor};
 
 pub use discovery::DiscoveryProcessor;
 pub use embeddings::{ImageEmbeddingProcessor, OcrTextEmbeddingProcessor};
+pub use faces::FaceEmbeddingProcessor;
 pub use geo::ReverseGeoProcessor;
 pub use image_quality::QualityProcessor;
 pub use metadata::MetadataProcessor;
@@ -23,6 +25,7 @@ pub fn run_all(ctx: &AppContext) -> Result<()> {
     ReverseGeoProcessor.run(ctx)?;
     QualityProcessor.run(ctx)?;
     ImageEmbeddingProcessor.run(ctx)?;
+    FaceEmbeddingProcessor.run(ctx)?;
     LazyOcrProcessor.run(ctx)?;
     OcrTextEmbeddingProcessor.run(ctx)?;
     Ok(())

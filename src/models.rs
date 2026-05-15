@@ -56,3 +56,17 @@ pub struct OcrResult {
     pub cleaned_text: String,
     pub confidence: Option<f64>,
 }
+
+#[derive(Debug, Clone)]
+pub struct FaceDetection {
+    pub face_index: i64,
+    pub bbox_x1: f64,
+    pub bbox_y1: f64,
+    pub bbox_x2: f64,
+    pub bbox_y2: f64,
+    pub detection_score: f64,
+    pub landmarks_json: Option<String>,
+    pub gender: Option<String>,
+    pub age: Option<u8>,
+    pub embedding: Vec<f32>,
+}

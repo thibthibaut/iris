@@ -5,8 +5,10 @@ use std::{cell::RefCell, path::Path};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::db::schema::FACE_EMBEDDING_DIMENSIONS;
 use crate::models::{
-    GeoCandidate, GeoLocation, ImageQuality, NewPhoto, OcrResult, Photo, PhotoMetadata,
+    FaceDetection, GeoCandidate, GeoLocation, ImageQuality, NewPhoto, OcrResult, Photo,
+    PhotoMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +23,7 @@ pub struct PhotoRow {
     pub has_image_embedding: bool,
     pub has_ocr_text_embedding: bool,
     pub geo_label: Option<String>,
+    pub face_count: i64,
 }
 
 pub struct Database {
@@ -100,6 +103,7 @@ ON CONFLICT(path) DO UPDATE SET
   exposure_score = NULL,
   screenshot_score = NULL,
   quality_score = NULL,
+  face_status = 'pending',
   ocr_status = 'pending',
   ocr_raw_text = NULL,
   ocr_cleaned_text = NULL,
@@ -115,6 +119,7 @@ ON CONFLICT(path) DO UPDATE SET
         )?;
         let photo_id = self.photo_id_by_path(&input.path)?;
         self.delete_embeddings(photo_id)?;
+        self.delete_faces_for_photo(photo_id)?;
         Ok(photo_id)
     }
 
@@ -162,6 +167,13 @@ WHERE id = ?
     pub fn photos_pending_ocr(&self, limit: usize) -> Result<Vec<Photo>> {
         self.query_photos(
             "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND ocr_status = 'pending' ORDER BY id LIMIT ?",
+            limit,
+        )
+    }
+
+    pub fn photos_pending_faces(&self, limit: usize) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND face_status = 'pending' ORDER BY id LIMIT ?",
             limit,
         )
     }
@@ -314,11 +326,80 @@ WHERE id = ?
     }
 
     pub fn save_image_embedding(&self, photo_id: i64, embedding: &[f32]) -> Result<()> {
-        self.save_vec_embedding("vec_image_embeddings", photo_id, embedding)
+        self.save_vec_embedding(
+            "vec_image_embeddings",
+            photo_id,
+            embedding,
+            self.embedding_dimensions,
+        )
     }
 
     pub fn save_ocr_text_embedding(&self, photo_id: i64, embedding: &[f32]) -> Result<()> {
-        self.save_vec_embedding("vec_ocr_text_embeddings", photo_id, embedding)
+        self.save_vec_embedding(
+            "vec_ocr_text_embeddings",
+            photo_id,
+            embedding,
+            self.embedding_dimensions,
+        )
+    }
+
+    pub fn replace_faces(&self, photo_id: i64, faces: &[FaceDetection]) -> Result<()> {
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+
+        delete_faces_for_photo_tx(&tx, photo_id)?;
+
+        for face in faces {
+            anyhow::ensure!(
+                face.embedding.len() == FACE_EMBEDDING_DIMENSIONS,
+                "face embedding dimension mismatch: expected {}, got {}",
+                FACE_EMBEDDING_DIMENSIONS,
+                face.embedding.len()
+            );
+
+            tx.execute(
+                r#"
+INSERT INTO faces(
+  photo_id, face_index, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+  detection_score, landmarks_json, gender, age
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"#,
+                params![
+                    photo_id,
+                    face.face_index,
+                    face.bbox_x1,
+                    face.bbox_y1,
+                    face.bbox_x2,
+                    face.bbox_y2,
+                    face.detection_score,
+                    face.landmarks_json,
+                    face.gender,
+                    face.age.map(i64::from),
+                ],
+            )?;
+            let face_id = tx.last_insert_rowid();
+            let bytes = bytemuck::cast_slice(face.embedding.as_slice());
+            tx.execute(
+                "INSERT OR REPLACE INTO vec_face_embeddings(rowid, embedding) VALUES (?, ?)",
+                params![face_id, bytes],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE photos SET face_status = 'done' WHERE id = ?",
+            params![photo_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn mark_faces_failed(&self, photo_id: i64) -> Result<()> {
+        self.conn.borrow().execute(
+            "UPDATE photos SET face_status = 'failed' WHERE id = ?",
+            params![photo_id],
+        )?;
+        Ok(())
     }
 
     pub fn stats(&self) -> Result<(i64, i64)> {
@@ -346,7 +427,8 @@ SELECT
   photos.ocr_status,
   photos.geo_label,
   EXISTS(SELECT 1 FROM vec_image_embeddings WHERE rowid = photos.id),
-  EXISTS(SELECT 1 FROM vec_ocr_text_embeddings WHERE rowid = photos.id)
+  EXISTS(SELECT 1 FROM vec_ocr_text_embeddings WHERE rowid = photos.id),
+  (SELECT COUNT(*) FROM faces WHERE photo_id = photos.id)
 FROM photos
 ORDER BY photos.id
 LIMIT ?
@@ -365,6 +447,7 @@ LIMIT ?
                 geo_label: row.get(7)?,
                 has_image_embedding: row.get::<_, i64>(8)? != 0,
                 has_ocr_text_embedding: row.get::<_, i64>(9)? != 0,
+                face_count: row.get(10)?,
             })
         })?;
 
@@ -399,16 +482,22 @@ LIMIT ?
             .context("failed to query photos")
     }
 
-    fn save_vec_embedding(&self, table: &str, photo_id: i64, embedding: &[f32]) -> Result<()> {
+    fn save_vec_embedding(
+        &self,
+        table: &str,
+        rowid: i64,
+        embedding: &[f32],
+        dimensions: usize,
+    ) -> Result<()> {
         anyhow::ensure!(
-            embedding.len() == self.embedding_dimensions,
+            embedding.len() == dimensions,
             "embedding dimension mismatch: expected {}, got {}",
-            self.embedding_dimensions,
+            dimensions,
             embedding.len()
         );
         let bytes = bytemuck::cast_slice(embedding);
         let sql = format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?, ?)");
-        self.conn.borrow().execute(&sql, params![photo_id, bytes])?;
+        self.conn.borrow().execute(&sql, params![rowid, bytes])?;
         Ok(())
     }
 
@@ -423,6 +512,32 @@ LIMIT ?
         )?;
         Ok(())
     }
+
+    fn delete_faces_for_photo(&self, photo_id: i64) -> Result<()> {
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+        delete_faces_for_photo_tx(&tx, photo_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn delete_faces_for_photo_tx(tx: &rusqlite::Transaction<'_>, photo_id: i64) -> Result<()> {
+    let face_ids = {
+        let mut stmt = tx.prepare("SELECT id FROM faces WHERE photo_id = ?")?;
+        let rows = stmt.query_map(params![photo_id], |row| row.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for face_id in face_ids {
+        tx.execute(
+            "DELETE FROM vec_face_embeddings WHERE rowid = ?",
+            params![face_id],
+        )?;
+    }
+
+    tx.execute("DELETE FROM faces WHERE photo_id = ?", params![photo_id])?;
+    Ok(())
 }
 
 fn register_sqlite_vec() {
@@ -558,6 +673,7 @@ mod tests {
         .unwrap();
         db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
             .unwrap();
+        db.replace_faces(photo_id, &[face_detection(0)]).unwrap();
 
         db.upsert_photo(
             &NewPhoto {
@@ -573,6 +689,8 @@ mod tests {
         assert_eq!(db.photos_missing_metadata(10).unwrap().len(), 1);
         assert_eq!(db.photos_missing_quality(10).unwrap().len(), 1);
         assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 1);
+        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+        assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 0);
     }
 
     #[test]
@@ -617,5 +735,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(db.photos_missing_geo(10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn face_status_allows_zero_face_photos() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = insert_test_photo(&db, scan_id);
+
+        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+        db.replace_faces(photo_id, &[]).unwrap();
+        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 0);
+        assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 0);
+    }
+
+    #[test]
+    fn stores_multiple_faces_per_photo() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = insert_test_photo(&db, scan_id);
+
+        db.replace_faces(photo_id, &[face_detection(0), face_detection(1)])
+            .unwrap();
+        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 0);
+        assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 2);
+    }
+
+    #[test]
+    fn rejects_wrong_face_embedding_dimension() {
+        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let photo_id = insert_test_photo(&db, scan_id);
+        let mut face = face_detection(0);
+        face.embedding = vec![0.0; FACE_EMBEDDING_DIMENSIONS - 1];
+
+        assert!(db.replace_faces(photo_id, &[face]).is_err());
+        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+    }
+
+    fn insert_test_photo(db: &Database, scan_id: i64) -> i64 {
+        db.upsert_photo(
+            &NewPhoto {
+                path: format!("/tmp/{scan_id}.jpg"),
+                blake3_hash: "abc".into(),
+                file_size: 1,
+                modified_at_unix: 2,
+            },
+            scan_id,
+        )
+        .unwrap()
+    }
+
+    fn face_detection(face_index: i64) -> FaceDetection {
+        FaceDetection {
+            face_index,
+            bbox_x1: 0.1,
+            bbox_y1: 0.2,
+            bbox_x2: 0.3,
+            bbox_y2: 0.4,
+            detection_score: 0.9,
+            landmarks_json: Some("[]".into()),
+            gender: Some("Male".into()),
+            age: Some(30),
+            embedding: vec![0.0; FACE_EMBEDDING_DIMENSIONS],
+        }
     }
 }

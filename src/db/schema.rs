@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
+pub const FACE_EMBEDDING_DIMENSIONS: usize = 512;
+
 pub fn initialize(conn: &Connection, embedding_dimensions: usize) -> Result<()> {
     conn.execute_batch(
         r#"
@@ -40,6 +42,7 @@ CREATE TABLE IF NOT EXISTS photos (
   exposure_score REAL,
   screenshot_score REAL,
   quality_score REAL,
+  face_status TEXT NOT NULL DEFAULT 'pending',
   ocr_status TEXT NOT NULL DEFAULT 'pending',
   ocr_raw_text TEXT,
   ocr_cleaned_text TEXT,
@@ -49,13 +52,46 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_photos_missing ON photos(missing);
 CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(blake3_hash);
 CREATE INDEX IF NOT EXISTS idx_photos_ocr_status ON photos(ocr_status);
+
+CREATE TABLE IF NOT EXISTS faces (
+  id INTEGER PRIMARY KEY,
+  photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  face_index INTEGER NOT NULL,
+  bbox_x1 REAL NOT NULL,
+  bbox_y1 REAL NOT NULL,
+  bbox_x2 REAL NOT NULL,
+  bbox_y2 REAL NOT NULL,
+  detection_score REAL NOT NULL,
+  landmarks_json TEXT,
+  gender TEXT,
+  age INTEGER,
+  UNIQUE(photo_id, face_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 "#,
     )?;
 
     drop_obsolete_timestamp_columns(conn)?;
     add_missing_geo_columns(conn)?;
+    add_missing_face_columns(conn)?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_photos_face_status ON photos(face_status)",
+        [],
+    )?;
 
     ensure_embedding_tables(conn, embedding_dimensions)?;
+
+    Ok(())
+}
+
+fn add_missing_face_columns(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "photos", "face_status")? {
+        conn.execute(
+            "ALTER TABLE photos ADD COLUMN face_status TEXT NOT NULL DEFAULT 'pending'",
+            [],
+        )?;
+    }
 
     Ok(())
 }
@@ -136,6 +172,12 @@ DROP TABLE IF EXISTS vec_ocr_text_embeddings;
     );
     conn.execute(&text_sql, [])
         .context("failed to initialize sqlite-vec OCR text table")?;
+
+    let face_sql = format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_face_embeddings USING vec0(embedding float[{FACE_EMBEDDING_DIMENSIONS}])"
+    );
+    conn.execute(&face_sql, [])
+        .context("failed to initialize sqlite-vec face table")?;
 
     conn.execute(
         r#"
