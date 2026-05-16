@@ -50,7 +50,7 @@ fn main() -> Result<()> {
 }
 
 fn show_db(ctx: &AppContext) -> Result<()> {
-    let rows = ctx.db.photo_rows(ctx.effective_limit())?;
+    let rows = ctx.db.photo_rows(20)?;
 
     println!(
         "{:<5} {:<7} {:<10} {:<10} {:<8} {:<8} {:<7} {:<7} {:<5} {:<28} path",

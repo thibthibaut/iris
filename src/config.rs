@@ -9,7 +9,6 @@ pub struct Config {
     pub library_paths: Vec<PathBuf>,
     pub ocr_models_dir: PathBuf,
     pub ocr_edge_density_threshold: f64,
-    pub process_batch_size: usize,
     pub embedding_dimensions: usize,
 }
 
@@ -40,10 +39,6 @@ impl Config {
             "library_paths must not be empty"
         );
         anyhow::ensure!(
-            self.process_batch_size > 0,
-            "process_batch_size must be > 0"
-        );
-        anyhow::ensure!(
             self.embedding_dimensions > 0,
             "embedding_dimensions must be > 0"
         );
@@ -71,7 +66,6 @@ database_path = "iris.db"
 library_paths = ["./Photos"]
 ocr_models_dir = "./models"
 ocr_edge_density_threshold = 0.08
-process_batch_size = 128
 embedding_dimensions = 512
 "#,
         )

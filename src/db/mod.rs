@@ -3,7 +3,7 @@ mod schema;
 use std::{cell::RefCell, path::Path};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::db::schema::FACE_EMBEDDING_DIMENSIONS;
 use crate::models::{
@@ -143,44 +143,44 @@ WHERE id = ?
         Ok(changed)
     }
 
-    pub fn photos_missing_metadata(&self, limit: usize) -> Result<Vec<Photo>> {
+    pub fn photos_missing_metadata(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
-            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND (width IS NULL OR height IS NULL) ORDER BY id LIMIT ?",
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND (width IS NULL OR height IS NULL) ORDER BY id",
             limit,
         )
     }
 
-    pub fn photos_missing_quality(&self, limit: usize) -> Result<Vec<Photo>> {
+    pub fn photos_missing_quality(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
-            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND quality_score IS NULL ORDER BY id LIMIT ?",
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND quality_score IS NULL ORDER BY id",
             limit,
         )
     }
 
-    pub fn photos_missing_image_embedding(&self, limit: usize) -> Result<Vec<Photo>> {
+    pub fn photos_missing_image_embedding(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
-            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND NOT EXISTS (SELECT 1 FROM vec_image_embeddings WHERE rowid = photos.id) ORDER BY id LIMIT ?",
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND NOT EXISTS (SELECT 1 FROM vec_image_embeddings WHERE rowid = photos.id) ORDER BY id",
             limit,
         )
     }
 
-    pub fn photos_pending_ocr(&self, limit: usize) -> Result<Vec<Photo>> {
+    pub fn photos_pending_ocr(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
-            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND ocr_status = 'pending' ORDER BY id LIMIT ?",
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND ocr_status = 'pending' ORDER BY id",
             limit,
         )
     }
 
-    pub fn photos_pending_faces(&self, limit: usize) -> Result<Vec<Photo>> {
+    pub fn photos_pending_faces(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
-            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND face_status = 'pending' ORDER BY id LIMIT ?",
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND face_status = 'pending' ORDER BY id",
             limit,
         )
     }
 
-    pub fn photos_missing_geo(&self, limit: usize) -> Result<Vec<GeoCandidate>> {
+    pub fn photos_missing_geo(&self, limit: Option<usize>) -> Result<Vec<GeoCandidate>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare(
+        let sql = with_optional_limit(
             r#"
 SELECT id, gps_lat, gps_lon
 FROM photos
@@ -189,10 +189,11 @@ WHERE missing = 0
   AND gps_lon IS NOT NULL
   AND geo_label IS NULL
 ORDER BY id
-LIMIT ?
 "#,
+            limit,
         )?;
-        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+        let mut stmt = conn.prepare(&sql.sql)?;
+        let rows = stmt.query_map(sql.params(), |row| {
             Ok(GeoCandidate {
                 id: row.get(0)?,
                 gps_lat: row.get(1)?,
@@ -204,9 +205,12 @@ LIMIT ?
             .context("failed to read geo candidates")
     }
 
-    pub fn photos_missing_ocr_text_embedding(&self, limit: usize) -> Result<Vec<(Photo, String)>> {
+    pub fn photos_missing_ocr_text_embedding(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<(Photo, String)>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare(
+        let sql = with_optional_limit(
             r#"
 SELECT id, blake3_hash, path, width, height, ocr_cleaned_text
 FROM photos
@@ -216,10 +220,11 @@ WHERE missing = 0
   AND ocr_cleaned_text <> ''
   AND NOT EXISTS (SELECT 1 FROM vec_ocr_text_embeddings WHERE rowid = photos.id)
 ORDER BY id
-LIMIT ?
 "#,
+            limit,
         )?;
-        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+        let mut stmt = conn.prepare(&sql.sql)?;
+        let rows = stmt.query_map(sql.params(), |row| {
             Ok((
                 Photo {
                     id: row.get(0)?,
@@ -435,21 +440,24 @@ LIMIT ?
 "#,
         )?;
 
-        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
-            Ok(PhotoRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                file_size: row.get(2)?,
-                modified_at_unix: row.get(3)?,
-                missing: row.get::<_, i64>(4)? != 0,
-                quality_score: row.get(5)?,
-                ocr_status: row.get(6)?,
-                geo_label: row.get(7)?,
-                has_image_embedding: row.get::<_, i64>(8)? != 0,
-                has_ocr_text_embedding: row.get::<_, i64>(9)? != 0,
-                face_count: row.get(10)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![i64::try_from(limit).context("limit is too large")?],
+            |row| {
+                Ok(PhotoRow {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    file_size: row.get(2)?,
+                    modified_at_unix: row.get(3)?,
+                    missing: row.get::<_, i64>(4)? != 0,
+                    quality_score: row.get(5)?,
+                    ocr_status: row.get(6)?,
+                    geo_label: row.get(7)?,
+                    has_image_embedding: row.get::<_, i64>(8)? != 0,
+                    has_ocr_text_embedding: row.get::<_, i64>(9)? != 0,
+                    face_count: row.get(10)?,
+                })
+            },
+        )?;
 
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to inspect photo rows")
@@ -466,10 +474,11 @@ LIMIT ?
             .context("failed to read photo id")
     }
 
-    fn query_photos(&self, sql: &str, limit: usize) -> Result<Vec<Photo>> {
+    fn query_photos(&self, sql: &str, limit: Option<usize>) -> Result<Vec<Photo>> {
+        let sql = with_optional_limit(sql, limit)?;
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(params![limit_i64(limit)?], |row| {
+        let mut stmt = conn.prepare(&sql.sql)?;
+        let rows = stmt.query_map(sql.params(), |row| {
             Ok(Photo {
                 id: row.get(0)?,
                 blake3_hash: row.get(1)?,
@@ -557,8 +566,29 @@ fn register_sqlite_vec() {
     }
 }
 
-fn limit_i64(limit: usize) -> Result<i64> {
-    i64::try_from(limit).context("limit is too large")
+struct OptionalLimitSql {
+    sql: String,
+    limit: Option<i64>,
+}
+
+impl OptionalLimitSql {
+    fn params(&self) -> rusqlite::ParamsFromIter<Option<i64>> {
+        params_from_iter(self.limit)
+    }
+}
+
+fn with_optional_limit(sql: &str, limit: Option<usize>) -> Result<OptionalLimitSql> {
+    let limit = limit
+        .map(|limit| i64::try_from(limit).context("limit is too large"))
+        .transpose()?;
+
+    let sql = if limit.is_some() {
+        format!("{sql} LIMIT ?")
+    } else {
+        sql.to_string()
+    };
+
+    Ok(OptionalLimitSql { sql, limit })
 }
 
 #[cfg(test)]
@@ -626,10 +656,16 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 1);
+        assert_eq!(
+            db.photos_missing_image_embedding(Some(10)).unwrap().len(),
+            1
+        );
         db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
             .unwrap();
-        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 0);
+        assert_eq!(
+            db.photos_missing_image_embedding(Some(10)).unwrap().len(),
+            0
+        );
     }
 
     #[test]
@@ -686,10 +722,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(db.photos_missing_metadata(10).unwrap().len(), 1);
-        assert_eq!(db.photos_missing_quality(10).unwrap().len(), 1);
-        assert_eq!(db.photos_missing_image_embedding(10).unwrap().len(), 1);
-        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+        assert_eq!(db.photos_missing_metadata(Some(10)).unwrap().len(), 1);
+        assert_eq!(db.photos_missing_quality(Some(10)).unwrap().len(), 1);
+        assert_eq!(
+            db.photos_missing_image_embedding(Some(10)).unwrap().len(),
+            1
+        );
+        assert_eq!(db.photos_pending_faces(Some(10)).unwrap().len(), 1);
         assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 0);
     }
 
@@ -722,7 +761,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(db.photos_missing_geo(10).unwrap().len(), 1);
+        assert_eq!(db.photos_missing_geo(Some(10)).unwrap().len(), 1);
         db.save_geo_location(
             photo_id,
             &GeoLocation {
@@ -734,7 +773,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(db.photos_missing_geo(10).unwrap().len(), 0);
+        assert_eq!(db.photos_missing_geo(Some(10)).unwrap().len(), 0);
     }
 
     #[test]
@@ -743,9 +782,9 @@ mod tests {
         let scan_id = db.begin_scan().unwrap();
         let photo_id = insert_test_photo(&db, scan_id);
 
-        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+        assert_eq!(db.photos_pending_faces(Some(10)).unwrap().len(), 1);
         db.replace_faces(photo_id, &[]).unwrap();
-        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 0);
+        assert_eq!(db.photos_pending_faces(Some(10)).unwrap().len(), 0);
         assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 0);
     }
 
@@ -757,7 +796,7 @@ mod tests {
 
         db.replace_faces(photo_id, &[face_detection(0), face_detection(1)])
             .unwrap();
-        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 0);
+        assert_eq!(db.photos_pending_faces(Some(10)).unwrap().len(), 0);
         assert_eq!(db.photo_rows(10).unwrap()[0].face_count, 2);
     }
 
@@ -770,7 +809,7 @@ mod tests {
         face.embedding = vec![0.0; FACE_EMBEDDING_DIMENSIONS - 1];
 
         assert!(db.replace_faces(photo_id, &[face]).is_err());
-        assert_eq!(db.photos_pending_faces(10).unwrap().len(), 1);
+        assert_eq!(db.photos_pending_faces(Some(10)).unwrap().len(), 1);
     }
 
     fn insert_test_photo(db: &Database, scan_id: i64) -> i64 {

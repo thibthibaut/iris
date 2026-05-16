@@ -19,7 +19,7 @@ impl BatchProcessor for LazyOcrProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_pending_ocr(ctx.effective_limit())?;
+        let photos = ctx.db.photos_pending_ocr(ctx.limit)?;
         let pb = progress::bar(photos.len(), "ocr");
         let engine = OcrEngine::new(
             ctx.config.ocr_models_dir.join("PP-OCRv5_mobile_det.mnn"),

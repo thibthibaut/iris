@@ -13,7 +13,7 @@ impl BatchProcessor for ReverseGeoProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let candidates = ctx.db.photos_missing_geo(ctx.effective_limit())?;
+        let candidates = ctx.db.photos_missing_geo(ctx.limit)?;
         let pb = progress::bar(candidates.len(), "geo");
         let geocoder = ReverseGeocoder::new();
         let mut done = 0;

@@ -15,7 +15,7 @@ impl BatchProcessor for FaceEmbeddingProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_pending_faces(ctx.effective_limit())?;
+        let photos = ctx.db.photos_pending_faces(ctx.limit)?;
         let pb = progress::bar(photos.len(), "faces");
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let analyzer = runtime
