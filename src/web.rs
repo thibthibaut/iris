@@ -33,7 +33,7 @@ struct WebState {
     db_path: PathBuf,
     webp_cache_dir: PathBuf,
     text_embedder: Arc<Mutex<TextEmbedder>>,
-    vips: Arc<Mutex<VipsApp>>,
+    vips: Arc<VipsApp>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +76,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         webp_cache_dir: webp_cache::cache_dir(&db_path),
         db_path,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
-        vips: Arc::new(Mutex::new(vips)),
+        vips: Arc::new(vips),
     };
     let app = Router::new()
         .route("/", get(index))

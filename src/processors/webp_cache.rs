@@ -1,7 +1,8 @@
-use std::{sync::Mutex, time::Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use libvips::VipsApp;
+use rayon::prelude::*;
 use tracing::{info, warn};
 
 use crate::{app::AppContext, processors::progress, traits::BatchProcessor, webp_cache as cache};
@@ -17,38 +18,50 @@ impl BatchProcessor for WebpCacheProcessor {
         let photos = ctx.db.heic_photos(ctx.limit)?;
         let pb = progress::bar(photos.len(), "webp cache");
         let cache_dir = cache::cache_dir(&ctx.config.database_path);
-        let vips = Mutex::new(
-            VipsApp::default("iris-webp-cache").context("failed to initialize libvips")?,
-        );
-        let mut cached = 0;
-        let mut converted = 0;
-        let mut failed = 0;
+        let vips = VipsApp::default("iris-webp-cache").context("failed to initialize libvips")?;
 
-        for (photo_id, path) in photos {
-            let start = Instant::now();
-            match cache::ensure_heic_webp(&vips, &cache_dir, &path) {
-                Ok(result) => {
-                    if result.cache_hit {
-                        cached += 1;
-                    } else {
-                        converted += 1;
+        let outcomes = photos
+            .par_iter()
+            .map(|(photo_id, path)| {
+                let start = Instant::now();
+                let outcome = match cache::ensure_heic_webp(&vips, &cache_dir, path) {
+                    Ok(result) => {
+                        info!(
+                            photo_id,
+                            path = %path,
+                            cache_path = %result.path.display(),
+                            cache_hit = result.cache_hit,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "HEIC WebP cache ready"
+                        );
+                        if result.cache_hit {
+                            WebpCacheOutcome::Cached
+                        } else {
+                            WebpCacheOutcome::Converted
+                        }
                     }
-                    info!(
-                        photo_id,
-                        path = %path,
-                        cache_path = %result.path.display(),
-                        cache_hit = result.cache_hit,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "HEIC WebP cache ready"
-                    );
-                }
-                Err(error) => {
-                    failed += 1;
-                    warn!(photo_id, path = %path, %error, "failed to cache HEIC as WebP");
-                }
-            }
-            pb.inc(1);
-        }
+                    Err(error) => {
+                        warn!(photo_id, path = %path, %error, "failed to cache HEIC as WebP");
+                        WebpCacheOutcome::Failed
+                    }
+                };
+                pb.inc(1);
+                outcome
+            })
+            .collect::<Vec<_>>();
+
+        let cached = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, WebpCacheOutcome::Cached))
+            .count();
+        let converted = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, WebpCacheOutcome::Converted))
+            .count();
+        let failed = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, WebpCacheOutcome::Failed))
+            .count();
 
         pb.finish_and_clear();
         info!(
@@ -57,4 +70,10 @@ impl BatchProcessor for WebpCacheProcessor {
         );
         Ok(())
     }
+}
+
+enum WebpCacheOutcome {
+    Cached,
+    Converted,
+    Failed,
 }

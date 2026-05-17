@@ -1,6 +1,5 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -24,7 +23,7 @@ pub fn cache_dir(db_path: &Path) -> PathBuf {
 }
 
 pub fn ensure_heic_webp(
-    vips: &Mutex<VipsApp>,
+    _vips: &VipsApp,
     cache_dir: &Path,
     source_path: &str,
 ) -> Result<CachedWebp> {
@@ -39,7 +38,7 @@ pub fn ensure_heic_webp(
         });
     }
 
-    convert_heic_to_webp(vips, source_path, &cache_path)?;
+    convert_heic_to_webp(source_path, &cache_path)?;
     Ok(CachedWebp {
         path: cache_path,
         cache_hit: false,
@@ -82,10 +81,7 @@ pub fn is_heic_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("heic"))
 }
 
-fn convert_heic_to_webp(vips: &Mutex<VipsApp>, source_path: &str, cache_path: &Path) -> Result<()> {
-    let _vips = vips
-        .lock()
-        .map_err(|_| anyhow::anyhow!("libvips lock is poisoned"))?;
+fn convert_heic_to_webp(source_path: &str, cache_path: &Path) -> Result<()> {
     let parent = cache_path
         .parent()
         .context("HEIC WebP cache path has no parent")?;
