@@ -1,4 +1,4 @@
 database_path = "iris.db"
-library_paths = ["./Photos"]
+library_paths = ["../photos_backup"]
 ocr_models_dir = "./models"
 ocr_edge_density_threshold = 0.08
