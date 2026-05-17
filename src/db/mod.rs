@@ -450,6 +450,34 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             .context("failed to read photo path")
     }
 
+    pub fn photo_detail(&self, photo_id: i64) -> Result<Option<SearchResult>> {
+        self.conn
+            .borrow()
+            .query_row(
+                r#"
+SELECT id, path, taken_at, camera_model, geo_label, quality_score, width, height
+FROM photos
+WHERE id = ? AND missing = 0
+"#,
+                params![photo_id],
+                |row| {
+                    Ok(SearchResult {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        taken_at: row.get(2)?,
+                        camera_model: row.get(3)?,
+                        geo_label: row.get(4)?,
+                        quality_score: row.get(5)?,
+                        width: row.get(6)?,
+                        height: row.get(7)?,
+                        score: 0.0,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read photo detail")
+    }
+
     pub fn search_photos(
         &self,
         query: &str,

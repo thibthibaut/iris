@@ -25,7 +25,7 @@ use crate::{
 };
 
 const MOBILE_CLIP_MODEL_ID: &str = "RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX";
-const SEARCH_LIMIT: usize = 48;
+const SEARCH_LIMIT: usize = 20;
 const HEIC_WEBP_QUALITY: i32 = 82;
 
 #[derive(Clone)]
@@ -80,6 +80,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     };
     let app = Router::new()
         .route("/", get(index))
+        .route("/view/:id", get(photo_view))
         .route("/photos/:id", get(photo))
         .fallback(not_found)
         .with_state(state)
@@ -149,6 +150,21 @@ async fn index(State(state): State<WebState>, Query(params): Query<SearchParams>
     }
 }
 
+async fn photo_view(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Response {
+    match render_photo_view(&state, photo_id) {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Html(render_not_found("/view"))).into_response(),
+        Err(error) => {
+            error!(photo_id, %error, "failed to render photo detail page");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Response {
     match photo_response(&state, photo_id) {
         Ok(Some((bytes, content_type))) => Response::builder()
@@ -165,6 +181,22 @@ async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Resp
                 .into_response()
         }
     }
+}
+
+fn render_photo_view(state: &WebState, photo_id: i64) -> Result<Option<String>> {
+    let start = Instant::now();
+    let db = Database::open(&state.db_path)?;
+    let Some(photo) = db.photo_detail(photo_id)? else {
+        warn!(photo_id, "photo detail not found");
+        return Ok(None);
+    };
+
+    info!(
+        photo_id,
+        elapsed_ms = elapsed_ms(start),
+        "photo detail rendered"
+    );
+    Ok(Some(photo_page_html(&photo)))
 }
 
 async fn not_found(State(_state): State<WebState>, uri: Uri) -> Response {
@@ -426,6 +458,7 @@ body {{ margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystem
 main {{ width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 84px 0 56px; }}
 .hero {{ text-align: center; margin: 0 auto 36px; max-width: 720px; }}
 h1 {{ margin: 0; font-size: clamp(48px, 8vw, 88px); line-height: .95; letter-spacing: -.06em; font-weight: 700; }}
+.acronym {{ margin: 12px 0 0; color: var(--muted); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }}
 .subtitle {{ margin: 18px 0 30px; color: var(--muted); font-size: 19px; }}
 .search {{ display: flex; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 24px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); backdrop-filter: blur(20px); }}
 input {{ width: 100%; border: 0; outline: 0; background: transparent; padding: 15px 18px; font: inherit; font-size: 18px; color: var(--text); }}
@@ -433,7 +466,8 @@ button {{ border: 0; border-radius: 18px; padding: 13px 20px; font: inherit; fon
 button:hover {{ background: #0077ed; }}
 .result-count {{ margin: 0 0 18px; color: var(--muted); font-size: 15px; }}
 .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 18px; }}
-.card {{ overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: rgba(255,255,255,.72); box-shadow: 0 18px 50px rgba(0,0,0,.06); }}
+.card {{ overflow: hidden; border: 1px solid var(--line); border-radius: 24px; color: inherit; text-decoration: none; background: rgba(255,255,255,.72); box-shadow: 0 18px 50px rgba(0,0,0,.06); transition: transform .18s ease, box-shadow .18s ease; }}
+.card:hover {{ transform: translateY(-2px); box-shadow: 0 24px 60px rgba(0,0,0,.1); }}
 .thumb {{ display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #e8e8ed; }}
 .meta {{ padding: 13px 14px 15px; }}
 .name {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }}
@@ -445,7 +479,8 @@ button:hover {{ background: #0077ed; }}
 <body>
 <main>
 <section class="hero">
-<h1>Iris</h1>
+<h1>iris</h1>
+<p class="acronym">intelligent retrieval for image search</p>
 <p class="subtitle">{count} indexed photos in the library.</p>
 <form class="search" action="/" method="get">
 <input name="q" type="search" value="{query_value}" placeholder="Search places, text, objects, moments" autofocus>
@@ -481,11 +516,87 @@ fn result_card(result: &SearchResult) -> String {
     let relevance = format!("{:.0}% match", (result.score * 100.0).clamp(0.0, 100.0));
 
     format!(
-        r#"<article class="card" title="{}"><img class="thumb" src="/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></article>"#,
+        r#"<a class="card" href="/view/{}" title="{}"><img class="thumb" src="/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></a>"#,
+        result.id,
         escape_html(&relevance),
         result.id,
         escape_html(title),
         escape_html(detail),
+    )
+}
+
+fn photo_page_html(photo: &SearchResult) -> String {
+    let title = std::path::Path::new(&photo.path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&photo.path);
+    let dimensions = match (photo.width, photo.height) {
+        (Some(width), Some(height)) => Some(format!("{width} x {height}")),
+        _ => None,
+    };
+    let quality = photo
+        .quality_score
+        .map(|score| format!("{:.0}%", score * 100.0));
+    let metadata = [
+        ("Location", photo.geo_label.as_deref()),
+        ("Taken", photo.taken_at.as_deref()),
+        ("Camera", photo.camera_model.as_deref()),
+        ("Dimensions", dimensions.as_deref()),
+        ("Quality", quality.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| {
+        value.map(|value| {
+            format!(
+                r#"<div class="metadata-row"><span>{}</span><strong>{}</strong></div>"#,
+                escape_html(label),
+                escape_html(value),
+            )
+        })
+    })
+    .collect::<String>();
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{}</title>
+<style>
+:root {{ color-scheme: light; --bg: #f5f5f7; --panel: rgba(255,255,255,.82); --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08); }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; color: var(--text); background: radial-gradient(circle at top, #fff 0, var(--bg) 42rem); }}
+main {{ width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 56px; }}
+.topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }}
+.brand {{ color: var(--text); text-decoration: none; font-size: 22px; font-weight: 700; letter-spacing: -.05em; }}
+.back {{ color: var(--muted); text-decoration: none; font-size: 15px; }}
+.layout {{ display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }}
+.photo-panel, .info {{ border: 1px solid var(--line); border-radius: 30px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); backdrop-filter: blur(20px); }}
+.photo-panel {{ display: grid; place-items: center; overflow: hidden; min-height: 60vh; padding: 18px; }}
+.photo-panel img {{ display: block; max-width: 100%; max-height: 78vh; border-radius: 18px; object-fit: contain; }}
+.info {{ padding: 24px; }}
+h1 {{ margin: 0 0 18px; overflow-wrap: anywhere; font-size: 24px; line-height: 1.05; letter-spacing: -.04em; }}
+.metadata-row {{ display: grid; gap: 5px; padding: 14px 0; border-top: 1px solid var(--line); }}
+.metadata-row span {{ color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }}
+.metadata-row strong {{ font-size: 15px; line-height: 1.35; font-weight: 600; }}
+@media (max-width: 860px) {{ main {{ padding-top: 18px; }} .layout {{ grid-template-columns: 1fr; }} .photo-panel {{ min-height: auto; }} }}
+</style>
+</head>
+<body>
+<main>
+<nav class="topbar"><a class="brand" href="/">iris</a><a class="back" href="/">Back to search</a></nav>
+<section class="layout">
+<div class="photo-panel"><img src="/photos/{}" alt=""></div>
+<aside class="info"><h1>{}</h1>{}</aside>
+</section>
+</main>
+</body>
+</html>"#,
+        escape_html(title),
+        photo.id,
+        escape_html(title),
+        metadata,
     )
 }
 
@@ -603,7 +714,29 @@ mod tests {
             score: 0.5,
         };
         let card = result_card(&result);
+        assert!(card.contains(r#"href="/view/7""#));
         assert!(card.contains(r#"src="/photos/7""#));
+    }
+
+    #[test]
+    fn renders_photo_detail_page() {
+        let photo = SearchResult {
+            id: 9,
+            path: "/tmp/Beach & sun.heic".into(),
+            taken_at: Some("2026:05:17 10:11:12".into()),
+            camera_model: Some("Phone".into()),
+            geo_label: Some("Marseille, France".into()),
+            quality_score: Some(0.91),
+            width: Some(3000),
+            height: Some(2000),
+            score: 0.0,
+        };
+        let html = photo_page_html(&photo);
+
+        assert!(html.contains(r#"src="/photos/9""#));
+        assert!(html.contains("Beach &amp; sun.heic"));
+        assert!(html.contains("Marseille, France"));
+        assert!(html.contains("3000 x 2000"));
     }
 
     #[test]
