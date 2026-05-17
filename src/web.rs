@@ -30,7 +30,6 @@ const SEARCH_LIMIT: usize = 48;
 struct WebState {
     db_path: PathBuf,
     text_embedder: Arc<Mutex<TextEmbedder>>,
-    base_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,13 +37,11 @@ struct SearchParams {
     q: Option<String>,
 }
 
-pub async fn serve(config: Config, host: String, port: u16, base_path: String) -> Result<()> {
+pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     let db_path = config.database_path.clone();
-    let base_path = normalize_base_path(&base_path)?;
     info!(
         %host,
         port,
-        base_path = if base_path.is_empty() { "/" } else { &base_path },
         db_path = %db_path.display(),
         model = MOBILE_CLIP_MODEL_ID,
         "starting web server"
@@ -64,19 +61,13 @@ pub async fn serve(config: Config, host: String, port: u16, base_path: String) -
     let state = WebState {
         db_path,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
-        base_path: base_path.clone(),
     };
-    let routes = Router::new()
+    let app = Router::new()
         .route("/", get(index))
-        .route("/photos/:id", get(photo));
-    let app = if base_path.is_empty() {
-        routes
-    } else {
-        Router::new().nest(&base_path, routes)
-    }
-    .fallback(not_found)
-    .with_state(state)
-    .layer(middleware::from_fn(log_request));
+        .route("/photos/:id", get(photo))
+        .fallback(not_found)
+        .with_state(state)
+        .layer(middleware::from_fn(log_request));
     let address = format!("{host}:{port}");
     info!(address = %address, "binding web server");
     let listener = tokio::net::TcpListener::bind(&address)
@@ -89,7 +80,6 @@ pub async fn serve(config: Config, host: String, port: u16, base_path: String) -
     info!(
         requested_url = %format!("http://{address}"),
         bound_address = %bound_address,
-        base_path = if base_path.is_empty() { "/" } else { &base_path },
         "web server listening"
     );
     axum::serve(listener, app)
@@ -161,13 +151,9 @@ async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Resp
     }
 }
 
-async fn not_found(State(state): State<WebState>, uri: Uri) -> Response {
+async fn not_found(State(_state): State<WebState>, uri: Uri) -> Response {
     warn!(path = %uri.path(), "route not found");
-    (
-        StatusCode::NOT_FOUND,
-        Html(render_not_found(&state.base_path, uri.path())),
-    )
-        .into_response()
+    (StatusCode::NOT_FOUND, Html(render_not_found(uri.path()))).into_response()
 }
 
 fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
@@ -225,7 +211,7 @@ fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
         "index page rendered"
     );
 
-    Ok(page_html(indexed_count, query, &results, &state.base_path))
+    Ok(page_html(indexed_count, query, &results))
 }
 
 fn read_photo(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'static str)>> {
@@ -253,12 +239,7 @@ fn elapsed_ms(start: Instant) -> u128 {
     start.elapsed().as_millis()
 }
 
-fn page_html(
-    indexed_count: i64,
-    query: Option<&str>,
-    results: &[SearchResult],
-    base_path: &str,
-) -> String {
+fn page_html(indexed_count: i64, query: Option<&str>, results: &[SearchResult]) -> String {
     let query_value = query.map_or_else(String::new, escape_html);
     let count = format_count(indexed_count);
     let results_html = if let Some(query) = query {
@@ -272,10 +253,7 @@ fn page_html(
                 r#"<section class="results"><div class="result-count">{} results for <strong>{}</strong></div><div class="grid">{}</div></section>"#,
                 results.len(),
                 escape_html(query),
-                results
-                    .iter()
-                    .map(|result| result_card(result, base_path))
-                    .collect::<String>()
+                results.iter().map(result_card).collect::<String>()
             )
         }
     } else {
@@ -317,7 +295,7 @@ button:hover {{ background: #0077ed; }}
 <section class="hero">
 <h1>Iris</h1>
 <p class="subtitle">{count} indexed photos in the library.</p>
-<form class="search" action="{root_path}" method="get">
+<form class="search" action="/" method="get">
 <input name="q" type="search" value="{query_value}" placeholder="Search places, text, objects, moments" autofocus>
 <button type="submit">Search</button>
 </form>
@@ -325,12 +303,11 @@ button:hover {{ background: #0077ed; }}
 {results_html}
 </main>
 </body>
-</html>"#,
-        root_path = root_path(base_path),
+</html>"#
     )
 }
 
-fn result_card(result: &SearchResult, base_path: &str) -> String {
+fn result_card(result: &SearchResult) -> String {
     let title = std::path::Path::new(&result.path)
         .file_name()
         .and_then(|value| value.to_str())
@@ -352,40 +329,12 @@ fn result_card(result: &SearchResult, base_path: &str) -> String {
     let relevance = format!("{:.0}% match", (result.score * 100.0).clamp(0.0, 100.0));
 
     format!(
-        r#"<article class="card" title="{}"><img class="thumb" src="{}/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></article>"#,
+        r#"<article class="card" title="{}"><img class="thumb" src="/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></article>"#,
         escape_html(&relevance),
-        base_path,
         result.id,
         escape_html(title),
         escape_html(detail),
     )
-}
-
-fn normalize_base_path(base_path: &str) -> Result<String> {
-    let base_path = base_path.trim();
-    if base_path.is_empty() || base_path == "/" {
-        return Ok(String::new());
-    }
-
-    anyhow::ensure!(
-        base_path.starts_with('/'),
-        "web base path must start with '/', got {base_path}"
-    );
-    anyhow::ensure!(
-        base_path
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')),
-        "web base path contains unsupported characters: {base_path}"
-    );
-    Ok(base_path.trim_end_matches('/').to_string())
-}
-
-fn root_path(base_path: &str) -> String {
-    if base_path.is_empty() {
-        "/".to_string()
-    } else {
-        format!("{base_path}/")
-    }
 }
 
 fn render_error(message: &str) -> String {
@@ -395,7 +344,7 @@ fn render_error(message: &str) -> String {
     )
 }
 
-fn render_not_found(base_path: &str, path: &str) -> String {
+fn render_not_found(path: &str) -> String {
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -420,12 +369,11 @@ code {{ padding: 2px 6px; border-radius: 7px; background: rgba(0,0,0,.06); color
 <p class="code">404</p>
 <h1>Page not found</h1>
 <p>Iris does not have a route for <code>{}</code>.</p>
-<a href="{}">Back to Iris</a>
+<a href="/">Back to Iris</a>
 </main>
 </body>
 </html>"#,
         escape_html(path),
-        root_path(base_path),
     )
 }
 
@@ -487,17 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_base_paths() {
-        assert_eq!(normalize_base_path("/").unwrap(), "");
-        assert_eq!(normalize_base_path("/iris/").unwrap(), "/iris");
-        assert!(normalize_base_path("iris").is_err());
-        assert!(normalize_base_path("/iris?bad").is_err());
-    }
-
-    #[test]
-    fn renders_prefixed_links() {
-        let html = page_html(1, None, &[], "/iris");
-        assert!(html.contains(r#"action="/iris/""#));
+    fn renders_root_links() {
+        let html = page_html(1, None, &[]);
+        assert!(html.contains(r#"action="/""#));
 
         let result = SearchResult {
             id: 7,
@@ -510,15 +450,15 @@ mod tests {
             height: None,
             score: 0.5,
         };
-        let card = result_card(&result, "/iris");
-        assert!(card.contains(r#"src="/iris/photos/7""#));
+        let card = result_card(&result);
+        assert!(card.contains(r#"src="/photos/7""#));
     }
 
     #[test]
-    fn renders_prefixed_404_page() {
-        let html = render_not_found("/iris", "/iris/missing");
+    fn renders_404_page() {
+        let html = render_not_found("/missing");
         assert!(html.contains("Page not found"));
-        assert!(html.contains(r#"href="/iris/""#));
-        assert!(html.contains("/iris/missing"));
+        assert!(html.contains(r#"href="/""#));
+        assert!(html.contains("/missing"));
     }
 }

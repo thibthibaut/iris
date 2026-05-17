@@ -46,13 +46,9 @@ fn main() -> Result<()> {
         Command::Faces => FaceEmbeddingProcessor.run(&ctx),
         Command::Ocr => LazyOcrProcessor.run(&ctx),
         Command::ShowDb => show_db(&ctx),
-        Command::Serve {
-            host,
-            port,
-            base_path,
-        } => {
+        Command::Serve { host, port } => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(web::serve(ctx.config, host, port, base_path))
+            runtime.block_on(web::serve(ctx.config, host, port))
         }
         Command::All => run_all(&ctx),
     }
