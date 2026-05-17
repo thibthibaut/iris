@@ -24,6 +24,7 @@ pub enum Command {
     Embed,
     Faces,
     Ocr,
+    WebpCache,
     ShowDb,
     Serve {
         #[arg(long, default_value = "127.0.0.1")]

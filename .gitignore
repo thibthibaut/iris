@@ -5,6 +5,7 @@ iris.db
 *.db-wal
 .DS_Store
 Photos/
+.iris-cache/
 
 # Devenv
 .devenv*

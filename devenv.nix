@@ -21,9 +21,11 @@
     pkgs.llvmPackages.libcxxClang
   ];
 
-    env = {
+  env = {
     # Point bindgen to the correct libclang directory inside the Nix store
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-    };
+    # Some Rust transitive dependencies compile C++ sources and need libc++ headers in the Nix shell.
+    CXXFLAGS = "-isystem ${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
+  };
   # See full reference at https://devenv.sh/reference/options/
 }

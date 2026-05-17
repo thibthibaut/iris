@@ -6,6 +6,7 @@ mod image_quality;
 mod metadata;
 mod ocr;
 mod progress;
+mod webp_cache;
 
 use anyhow::Result;
 
@@ -18,12 +19,14 @@ pub use geo::ReverseGeoProcessor;
 pub use image_quality::QualityProcessor;
 pub use metadata::MetadataProcessor;
 pub use ocr::LazyOcrProcessor;
+pub use webp_cache::WebpCacheProcessor;
 
 pub fn run_all(ctx: &AppContext) -> Result<()> {
     DiscoveryProcessor.run(ctx)?;
     MetadataProcessor.run(ctx)?;
     ReverseGeoProcessor.run(ctx)?;
     QualityProcessor.run(ctx)?;
+    WebpCacheProcessor.run(ctx)?;
     ImageEmbeddingProcessor.run(ctx)?;
     FaceEmbeddingProcessor.run(ctx)?;
     LazyOcrProcessor.run(ctx)?;

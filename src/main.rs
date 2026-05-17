@@ -9,6 +9,7 @@ mod processors;
 mod text;
 mod traits;
 mod web;
+mod webp_cache;
 
 use anyhow::Result;
 use clap::Parser;
@@ -20,7 +21,8 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::processors::{
     DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor, LazyOcrProcessor,
-    MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor, run_all,
+    MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor,
+    WebpCacheProcessor, run_all,
 };
 use crate::traits::BatchProcessor;
 
@@ -45,6 +47,7 @@ fn main() -> Result<()> {
         }
         Command::Faces => FaceEmbeddingProcessor.run(&ctx),
         Command::Ocr => LazyOcrProcessor.run(&ctx),
+        Command::WebpCache => WebpCacheProcessor.run(&ctx),
         Command::ShowDb => show_db(&ctx),
         Command::Serve { host, port } => {
             let runtime = tokio::runtime::Runtime::new()?;

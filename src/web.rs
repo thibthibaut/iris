@@ -1,7 +1,7 @@
 use std::{
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use libvips::{VipsApp, VipsImage, ops};
+use libvips::VipsApp;
 use open_clip_inference::TextEmbedder;
 use serde::Deserialize;
 use tracing::{error, info, warn};
@@ -22,11 +22,11 @@ use tracing::{error, info, warn};
 use crate::{
     config::Config,
     db::{Database, SearchResult},
+    webp_cache,
 };
 
 const MOBILE_CLIP_MODEL_ID: &str = "RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX";
 const SEARCH_LIMIT: usize = 20;
-const HEIC_WEBP_QUALITY: i32 = 82;
 
 #[derive(Clone)]
 struct WebState {
@@ -47,7 +47,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         %host,
         port,
         db_path = %db_path.display(),
-        webp_cache_dir = %webp_cache_dir(&db_path).display(),
+        webp_cache_dir = %webp_cache::cache_dir(&db_path).display(),
         model = MOBILE_CLIP_MODEL_ID,
         "starting web server"
     );
@@ -73,7 +73,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     );
 
     let state = WebState {
-        webp_cache_dir: webp_cache_dir(&db_path),
+        webp_cache_dir: webp_cache::cache_dir(&db_path),
         db_path,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
         vips: Arc::new(Mutex::new(vips)),
@@ -271,7 +271,7 @@ fn photo_response(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'
         return Ok(None);
     };
 
-    if is_heic_path(FsPath::new(&path)) {
+    if webp_cache::is_heic_path(FsPath::new(&path)) {
         return heic_webp_response(state, photo_id, &path, start).map(Some);
     }
 
@@ -294,133 +294,37 @@ fn heic_webp_response(
     source_path: &str,
     start: Instant,
 ) -> Result<(Vec<u8>, &'static str)> {
-    let metadata = std::fs::metadata(source_path)
-        .with_context(|| format!("failed to stat HEIC photo {source_path}"))?;
-    let cache_path = webp_cache_path(&state.webp_cache_dir, source_path, &metadata)?;
+    let convert_start = Instant::now();
+    let cached = webp_cache::ensure_heic_webp(&state.vips, &state.webp_cache_dir, source_path)?;
+    let bytes = std::fs::read(&cached.path)
+        .with_context(|| format!("failed to read cached WebP {}", cached.path.display()))?;
 
-    if cache_path.exists() {
-        let bytes = std::fs::read(&cache_path)
-            .with_context(|| format!("failed to read cached WebP {}", cache_path.display()))?;
+    if cached.cache_hit {
         info!(
             photo_id,
             source_path,
-            cache_path = %cache_path.display(),
+            cache_path = %cached.path.display(),
             bytes = bytes.len(),
             elapsed_ms = elapsed_ms(start),
             "served cached HEIC WebP"
         );
-        return Ok((bytes, "image/webp"));
+    } else {
+        info!(
+            photo_id,
+            source_path,
+            cache_path = %cached.path.display(),
+            bytes = bytes.len(),
+            convert_ms = elapsed_ms(convert_start),
+            elapsed_ms = elapsed_ms(start),
+            "converted and served HEIC WebP"
+        );
     }
 
-    info!(photo_id, source_path, cache_path = %cache_path.display(), "HEIC WebP cache miss");
-    let convert_start = Instant::now();
-    convert_heic_to_webp(state, source_path, &cache_path)?;
-    let bytes = std::fs::read(&cache_path)
-        .with_context(|| format!("failed to read converted WebP {}", cache_path.display()))?;
-
-    info!(
-        photo_id,
-        source_path,
-        cache_path = %cache_path.display(),
-        bytes = bytes.len(),
-        convert_ms = elapsed_ms(convert_start),
-        elapsed_ms = elapsed_ms(start),
-        "converted and served HEIC WebP"
-    );
     Ok((bytes, "image/webp"))
-}
-
-fn convert_heic_to_webp(state: &WebState, source_path: &str, cache_path: &FsPath) -> Result<()> {
-    let _vips = state
-        .vips
-        .lock()
-        .map_err(|_| anyhow::anyhow!("libvips lock is poisoned"))?;
-    let parent = cache_path
-        .parent()
-        .context("HEIC WebP cache path has no parent")?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create WebP cache dir {}", parent.display()))?;
-
-    let temp_path = cache_path.with_extension(format!("webp.{}.tmp", temp_suffix()));
-    let temp_path_string = temp_path.to_string_lossy().into_owned();
-    let image = VipsImage::new_from_file(source_path)
-        .map_err(|error| anyhow::anyhow!("{error:?}"))
-        .with_context(|| format!("libvips failed to load HEIC {source_path}"))?;
-    let image = ops::autorot(&image)
-        .map_err(|error| anyhow::anyhow!("{error:?}"))
-        .context("libvips failed to autorotate HEIC")?;
-    let options = ops::WebpsaveOptions {
-        q: HEIC_WEBP_QUALITY,
-        smart_subsample: true,
-        ..Default::default()
-    };
-    ops::webpsave_with_opts(&image, &temp_path_string, &options)
-        .map_err(|error| anyhow::anyhow!("{error:?}"))
-        .with_context(|| format!("libvips failed to write WebP {}", temp_path.display()))?;
-    std::fs::rename(&temp_path, cache_path).with_context(|| {
-        format!(
-            "failed to move WebP cache {} to {}",
-            temp_path.display(),
-            cache_path.display()
-        )
-    })?;
-    Ok(())
 }
 
 fn elapsed_ms(start: Instant) -> u128 {
     start.elapsed().as_millis()
-}
-
-fn webp_cache_dir(db_path: &FsPath) -> PathBuf {
-    db_path
-        .parent()
-        .unwrap_or_else(|| FsPath::new("."))
-        .join(".iris-cache")
-        .join("webp")
-}
-
-fn webp_cache_path(
-    cache_dir: &FsPath,
-    source_path: &str,
-    metadata: &std::fs::Metadata,
-) -> Result<PathBuf> {
-    let modified = metadata
-        .modified()
-        .context("failed to read source image modified time")?
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    Ok(webp_cache_path_from_parts(
-        cache_dir,
-        source_path,
-        metadata.len(),
-        modified,
-    ))
-}
-
-fn webp_cache_path_from_parts(
-    cache_dir: &FsPath,
-    source_path: &str,
-    file_size: u64,
-    modified_at_unix: u64,
-) -> PathBuf {
-    let key = format!("{source_path}|{file_size}|{modified_at_unix}");
-    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
-    cache_dir.join(format!("{hash}.webp"))
-}
-
-fn temp_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}.{nanos}", std::process::id())
-}
-
-fn is_heic_path(path: &FsPath) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic"))
 }
 
 fn page_html(indexed_count: i64, query: Option<&str>, results: &[SearchResult]) -> String {
@@ -745,24 +649,5 @@ mod tests {
         assert!(html.contains("Page not found"));
         assert!(html.contains(r#"href="/""#));
         assert!(html.contains("/missing"));
-    }
-
-    #[test]
-    fn detects_heic_paths_case_insensitively() {
-        assert!(is_heic_path(FsPath::new("/tmp/a.HEIC")));
-        assert!(!is_heic_path(FsPath::new("/tmp/a.jpg")));
-    }
-
-    #[test]
-    fn cache_path_uses_source_identity_and_metadata() {
-        let dir = FsPath::new("/tmp/cache");
-        let first = webp_cache_path_from_parts(dir, "/photos/a.heic", 12, 34);
-        let same = webp_cache_path_from_parts(dir, "/photos/a.heic", 12, 34);
-        let changed = webp_cache_path_from_parts(dir, "/photos/a.heic", 13, 34);
-
-        assert_eq!(first, same);
-        assert_ne!(first, changed);
-        assert_eq!(first.parent(), Some(dir));
-        assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("webp"));
     }
 }

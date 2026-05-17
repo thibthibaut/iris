@@ -478,6 +478,25 @@ WHERE id = ? AND missing = 0
             .context("failed to read photo detail")
     }
 
+    pub fn heic_photos(&self, limit: Option<usize>) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn.borrow();
+        let sql = with_optional_limit(
+            r#"
+SELECT id, path
+FROM photos
+WHERE missing = 0
+  AND lower(path) LIKE '%.heic'
+ORDER BY id
+"#,
+            limit,
+        )?;
+        let mut stmt = conn.prepare(&sql.sql)?;
+        let rows = stmt.query_map(sql.params(), |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read HEIC photo candidates")
+    }
+
     pub fn search_photos(
         &self,
         query: &str,
