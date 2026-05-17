@@ -14,6 +14,8 @@
   packages = [
     pkgs.git
     pkgs.lazygit
+    pkgs.pkg-config
+    pkgs.vips
   ];
 
   # See full reference at https://devenv.sh/reference/options/
