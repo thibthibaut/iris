@@ -1,20 +1,22 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
 use axum::{
     Router,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{StatusCode, header},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
 use open_clip_inference::TextEmbedder;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
@@ -36,37 +38,85 @@ struct SearchParams {
 }
 
 pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
+    let db_path = config.database_path.clone();
+    info!(
+        %host,
+        port,
+        db_path = %db_path.display(),
+        model = MOBILE_CLIP_MODEL_ID,
+        "starting web server"
+    );
+
+    let model_start = Instant::now();
+    info!("initializing query text embedder");
     let text_embedder = TextEmbedder::from_hf(MOBILE_CLIP_MODEL_ID)
         .build()
         .await
         .context("failed to initialize MobileCLIP text embedder")?;
+    info!(
+        elapsed_ms = elapsed_ms(model_start),
+        "query text embedder initialized"
+    );
+
     let state = WebState {
-        db_path: config.database_path,
+        db_path,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
     };
     let app = Router::new()
         .route("/", get(index))
         .route("/photos/:id", get(photo))
-        .with_state(state);
+        .with_state(state)
+        .layer(middleware::from_fn(log_request));
     let address = format!("{host}:{port}");
+    info!(address = %address, "binding web server");
     let listener = tokio::net::TcpListener::bind(&address)
         .await
         .with_context(|| format!("failed to bind web server on {address}"))?;
+    let bound_address = listener
+        .local_addr()
+        .context("failed to read bound web server address")?;
 
-    info!(url = %format!("http://{address}"), "web server listening");
+    info!(
+        requested_url = %format!("http://{address}"),
+        bound_address = %bound_address,
+        "web server listening"
+    );
     axum::serve(listener, app)
         .await
         .context("web server failed")
 }
 
+async fn log_request(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let start = Instant::now();
+    info!(%method, path = %uri.path(), query = uri.query().unwrap_or(""), "http request started");
+
+    let response = next.run(request).await;
+    let status = response.status();
+    info!(
+        %method,
+        path = %uri.path(),
+        query = uri.query().unwrap_or(""),
+        status = status.as_u16(),
+        elapsed_ms = elapsed_ms(start),
+        "http request completed"
+    );
+
+    response
+}
+
 async fn index(State(state): State<WebState>, Query(params): Query<SearchParams>) -> Response {
     match render_index(&state, params.q.as_deref()) {
         Ok(html) => Html(html).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(render_error(&error.to_string())),
-        )
-            .into_response(),
+        Err(error) => {
+            error!(%error, "failed to render index page");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -77,19 +127,34 @@ async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Resp
             .body(Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(render_error(&error.to_string())),
-        )
-            .into_response(),
+        Err(error) => {
+            error!(photo_id, %error, "failed to serve photo");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
     }
 }
 
 fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
+    let page_start = Instant::now();
+    let query = query.map(str::trim).filter(|query| !query.is_empty());
+    info!(has_query = query.is_some(), "rendering index page");
+
+    let db_start = Instant::now();
     let db = Database::open(&state.db_path)?;
     let indexed_count = db.indexed_photo_count()?;
-    let query = query.map(str::trim).filter(|query| !query.is_empty());
+    info!(
+        indexed_count,
+        elapsed_ms = elapsed_ms(db_start),
+        "loaded library stats"
+    );
+
     let results = if let Some(query) = query {
+        info!(query, limit = SEARCH_LIMIT, "search started");
+        let embedding_start = Instant::now();
         let embedding = {
             let embedder = state
                 .text_embedder
@@ -102,21 +167,58 @@ fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
                 .copied()
                 .collect::<Vec<_>>()
         };
-        db.search_photos(query, &embedding, SEARCH_LIMIT)?
+        info!(
+            query,
+            elapsed_ms = elapsed_ms(embedding_start),
+            "search query embedded"
+        );
+
+        let search_start = Instant::now();
+        let results = db.search_photos(query, &embedding, SEARCH_LIMIT)?;
+        info!(
+            query,
+            result_count = results.len(),
+            elapsed_ms = elapsed_ms(search_start),
+            "database search completed"
+        );
+        results
     } else {
         Vec::new()
     };
+
+    info!(
+        has_query = query.is_some(),
+        result_count = results.len(),
+        elapsed_ms = elapsed_ms(page_start),
+        "index page rendered"
+    );
 
     Ok(page_html(indexed_count, query, &results))
 }
 
 fn read_photo(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'static str)>> {
+    let start = Instant::now();
+    info!(photo_id, "photo lookup started");
     let db = Database::open(&state.db_path)?;
     let Some(path) = db.photo_path(photo_id)? else {
+        warn!(photo_id, "photo not found");
         return Ok(None);
     };
     let bytes = std::fs::read(&path).with_context(|| format!("failed to read photo {path}"))?;
-    Ok(Some((bytes, content_type(&path))))
+    let content_type = content_type(&path);
+    info!(
+        photo_id,
+        path = %path,
+        bytes = bytes.len(),
+        content_type,
+        elapsed_ms = elapsed_ms(start),
+        "photo loaded"
+    );
+    Ok(Some((bytes, content_type)))
+}
+
+fn elapsed_ms(start: Instant) -> u128 {
+    start.elapsed().as_millis()
 }
 
 fn page_html(indexed_count: i64, query: Option<&str>, results: &[SearchResult]) -> String {
