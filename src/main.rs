@@ -8,6 +8,7 @@ mod models;
 mod processors;
 mod text;
 mod traits;
+mod web;
 
 use anyhow::Result;
 use clap::Parser;
@@ -30,7 +31,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let config = Config::from_path(&cli.config)?;
-    let db = Database::open(&config.database_path, config.embedding_dimensions)?;
+    let db = Database::open(&config.database_path)?;
     let ctx = AppContext::new(config, db, cli.limit);
 
     match cli.command {
@@ -45,6 +46,10 @@ fn main() -> Result<()> {
         Command::Faces => FaceEmbeddingProcessor.run(&ctx),
         Command::Ocr => LazyOcrProcessor.run(&ctx),
         Command::ShowDb => show_db(&ctx),
+        Command::Serve { host, port } => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(web::serve(ctx.config, host, port))
+        }
         Command::All => run_all(&ctx),
     }
 }

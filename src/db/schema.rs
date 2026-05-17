@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
+pub const CLIP_EMBEDDING_DIMENSIONS: usize = 768;
 pub const FACE_EMBEDDING_DIMENSIONS: usize = 512;
 
-pub fn initialize(conn: &Connection, embedding_dimensions: usize) -> Result<()> {
+pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
 CREATE TABLE IF NOT EXISTS scan_runs (
@@ -80,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
         [],
     )?;
 
-    ensure_embedding_tables(conn, embedding_dimensions)?;
+    ensure_embedding_tables(conn)?;
 
     Ok(())
 }
@@ -142,17 +143,25 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn ensure_embedding_tables(conn: &Connection, embedding_dimensions: usize) -> Result<()> {
+fn ensure_embedding_tables(conn: &Connection) -> Result<()> {
     let configured_dimension = conn
         .query_row(
-            "SELECT value FROM app_meta WHERE key = 'embedding_dimensions'",
+            "SELECT value FROM app_meta WHERE key = 'clip_embedding_dimensions'",
             [],
             |row| row.get::<_, String>(0),
         )
         .ok()
+        .or_else(|| {
+            conn.query_row(
+                "SELECT value FROM app_meta WHERE key = 'embedding_dimensions'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
         .and_then(|value| value.parse::<usize>().ok());
 
-    if configured_dimension != Some(embedding_dimensions) {
+    if configured_dimension != Some(CLIP_EMBEDDING_DIMENSIONS) {
         conn.execute_batch(
             r#"
 DROP TABLE IF EXISTS vec_image_embeddings;
@@ -162,13 +171,13 @@ DROP TABLE IF EXISTS vec_ocr_text_embeddings;
     }
 
     let image_sql = format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_image_embeddings USING vec0(embedding float[{embedding_dimensions}])"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_image_embeddings USING vec0(embedding float[{CLIP_EMBEDDING_DIMENSIONS}])"
     );
     conn.execute(&image_sql, [])
         .context("failed to initialize sqlite-vec image table")?;
 
     let text_sql = format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_ocr_text_embeddings USING vec0(embedding float[{embedding_dimensions}])"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_ocr_text_embeddings USING vec0(embedding float[{CLIP_EMBEDDING_DIMENSIONS}])"
     );
     conn.execute(&text_sql, [])
         .context("failed to initialize sqlite-vec OCR text table")?;
@@ -181,10 +190,14 @@ DROP TABLE IF EXISTS vec_ocr_text_embeddings;
 
     conn.execute(
         r#"
-INSERT INTO app_meta(key, value) VALUES ('embedding_dimensions', ?)
+INSERT INTO app_meta(key, value) VALUES ('clip_embedding_dimensions', ?)
 ON CONFLICT(key) DO UPDATE SET value = excluded.value
 "#,
-        [embedding_dimensions.to_string()],
+        [CLIP_EMBEDDING_DIMENSIONS.to_string()],
+    )?;
+    conn.execute(
+        "DELETE FROM app_meta WHERE key = 'embedding_dimensions'",
+        [],
     )?;
 
     Ok(())

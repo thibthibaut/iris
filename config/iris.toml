@@ -2,5 +2,3 @@ database_path = "iris.db"
 library_paths = ["./Photos"]
 ocr_models_dir = "./models"
 ocr_edge_density_threshold = 0.08
-process_batch_size = 128
-embedding_dimensions = 768

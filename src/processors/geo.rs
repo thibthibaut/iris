@@ -1,5 +1,6 @@
 use anyhow::Result;
 use isocountry::CountryCode;
+use rayon::prelude::*;
 use reverse_geocoder::{Record, ReverseGeocoder};
 use tracing::info;
 
@@ -18,12 +19,19 @@ impl BatchProcessor for ReverseGeoProcessor {
         let geocoder = ReverseGeocoder::new();
         let mut done = 0;
 
-        for candidate in candidates {
-            let result = geocoder.search((candidate.gps_lat, candidate.gps_lon));
-            let location = location_from_record(result.record);
-            ctx.db.save_geo_location(candidate.id, &location)?;
+        let results = candidates
+            .par_iter()
+            .map(|candidate| {
+                let result = geocoder.search((candidate.gps_lat, candidate.gps_lon));
+                let location = location_from_record(result.record);
+                pb.inc(1);
+                (candidate.id, location)
+            })
+            .collect::<Vec<_>>();
+
+        for (photo_id, location) in results {
+            ctx.db.save_geo_location(photo_id, &location)?;
             done += 1;
-            pb.inc(1);
         }
 
         pb.finish_and_clear();

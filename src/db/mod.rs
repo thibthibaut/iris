@@ -1,11 +1,11 @@
 mod schema;
 
-use std::{cell::RefCell, path::Path};
+use std::{cell::RefCell, collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
-use crate::db::schema::FACE_EMBEDDING_DIMENSIONS;
+use crate::db::schema::{CLIP_EMBEDDING_DIMENSIONS, FACE_EMBEDDING_DIMENSIONS};
 use crate::models::{
     FaceDetection, GeoCandidate, GeoLocation, ImageQuality, NewPhoto, OcrResult, Photo,
     PhotoMetadata,
@@ -26,22 +26,33 @@ pub struct PhotoRow {
     pub face_count: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub id: i64,
+    pub path: String,
+    pub taken_at: Option<String>,
+    pub camera_model: Option<String>,
+    pub geo_label: Option<String>,
+    pub quality_score: Option<f64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub score: f64,
+}
+
 pub struct Database {
     conn: RefCell<Connection>,
-    embedding_dimensions: usize,
 }
 
 impl Database {
-    pub fn open(path: &Path, embedding_dimensions: usize) -> Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         register_sqlite_vec();
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        schema::initialize(&conn, embedding_dimensions)?;
+        schema::initialize(&conn)?;
         Ok(Self {
             conn: RefCell::new(conn),
-            embedding_dimensions,
         })
     }
 
@@ -335,7 +346,7 @@ WHERE id = ?
             "vec_image_embeddings",
             photo_id,
             embedding,
-            self.embedding_dimensions,
+            CLIP_EMBEDDING_DIMENSIONS,
         )
     }
 
@@ -344,7 +355,7 @@ WHERE id = ?
             "vec_ocr_text_embeddings",
             photo_id,
             embedding,
-            self.embedding_dimensions,
+            CLIP_EMBEDDING_DIMENSIONS,
         )
     }
 
@@ -416,6 +427,68 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
             )
             .context("failed to read stats")
+    }
+
+    pub fn indexed_photo_count(&self) -> Result<i64> {
+        self.conn
+            .borrow()
+            .query_row("SELECT COUNT(*) FROM photos WHERE missing = 0", [], |row| {
+                row.get(0)
+            })
+            .context("failed to read indexed photo count")
+    }
+
+    pub fn photo_path(&self, photo_id: i64) -> Result<Option<String>> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT path FROM photos WHERE id = ? AND missing = 0",
+                params![photo_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to read photo path")
+    }
+
+    pub fn search_photos(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        anyhow::ensure!(limit > 0, "search limit must be > 0");
+        anyhow::ensure!(
+            query_embedding.len() == CLIP_EMBEDDING_DIMENSIONS,
+            "query embedding dimension mismatch: expected {}, got {}",
+            CLIP_EMBEDDING_DIMENSIONS,
+            query_embedding.len()
+        );
+
+        let mut scores = HashMap::new();
+        self.add_vector_scores(
+            "vec_image_embeddings",
+            query_embedding,
+            limit,
+            0.65,
+            &mut scores,
+        )?;
+        self.add_vector_scores(
+            "vec_ocr_text_embeddings",
+            query_embedding,
+            limit,
+            0.55,
+            &mut scores,
+        )?;
+        self.add_text_scores(query, limit, &mut scores)?;
+
+        let mut ranked = scores.into_iter().collect::<Vec<_>>();
+        ranked.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+
+        ranked
+            .into_iter()
+            .take(limit)
+            .map(|(photo_id, score)| self.search_result(photo_id, score))
+            .collect()
     }
 
     pub fn photo_rows(&self, limit: usize) -> Result<Vec<PhotoRow>> {
@@ -510,6 +583,110 @@ LIMIT ?
         Ok(())
     }
 
+    fn add_vector_scores(
+        &self,
+        table: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        weight: f64,
+        scores: &mut HashMap<i64, f64>,
+    ) -> Result<()> {
+        let bytes = bytemuck::cast_slice(query_embedding);
+        let sql = format!("SELECT rowid, distance FROM {table} WHERE embedding MATCH ? AND k = ?");
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![bytes, i64::try_from(limit).context("limit is too large")?],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+        )?;
+
+        for row in rows {
+            let (photo_id, distance) = row?;
+            let score = weight / (1.0 + distance.max(0.0));
+            *scores.entry(photo_id).or_insert(0.0) += score;
+        }
+
+        Ok(())
+    }
+
+    fn add_text_scores(
+        &self,
+        query: &str,
+        limit: usize,
+        scores: &mut HashMap<i64, f64>,
+    ) -> Result<()> {
+        let pattern = format!("%{}%", escape_like(query));
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT id
+FROM photos
+WHERE missing = 0
+  AND (
+    path LIKE ? ESCAPE '\'
+    OR camera_model LIKE ? ESCAPE '\'
+    OR taken_at LIKE ? ESCAPE '\'
+    OR geo_city LIKE ? ESCAPE '\'
+    OR geo_region LIKE ? ESCAPE '\'
+    OR geo_country LIKE ? ESCAPE '\'
+    OR geo_country_code LIKE ? ESCAPE '\'
+    OR geo_label LIKE ? ESCAPE '\'
+    OR ocr_cleaned_text LIKE ? ESCAPE '\'
+  )
+ORDER BY id
+LIMIT ?
+"#,
+        )?;
+        let rows = stmt.query_map(
+            params![
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                pattern,
+                i64::try_from(limit).context("limit is too large")?,
+            ],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        for row in rows {
+            *scores.entry(row?).or_insert(0.0) += 0.35;
+        }
+
+        Ok(())
+    }
+
+    fn search_result(&self, photo_id: i64, score: f64) -> Result<SearchResult> {
+        self.conn
+            .borrow()
+            .query_row(
+                r#"
+SELECT id, path, taken_at, camera_model, geo_label, quality_score, width, height
+FROM photos
+WHERE id = ? AND missing = 0
+"#,
+                params![photo_id],
+                |row| {
+                    Ok(SearchResult {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        taken_at: row.get(2)?,
+                        camera_model: row.get(3)?,
+                        geo_label: row.get(4)?,
+                        quality_score: row.get(5)?,
+                        width: row.get(6)?,
+                        height: row.get(7)?,
+                        score,
+                    })
+                },
+            )
+            .context("failed to read search result")
+    }
+
     fn delete_embeddings(&self, photo_id: i64) -> Result<()> {
         self.conn.borrow().execute(
             "DELETE FROM vec_image_embeddings WHERE rowid = ?",
@@ -529,6 +706,20 @@ LIMIT ?
         tx.commit()?;
         Ok(())
     }
+}
+
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn delete_faces_for_photo_tx(tx: &rusqlite::Transaction<'_>, photo_id: i64) -> Result<()> {
@@ -597,7 +788,7 @@ mod tests {
 
     #[test]
     fn marks_missing_without_deleting() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         db.upsert_photo(
             &NewPhoto {
@@ -619,7 +810,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_embedding_dimension() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = db
             .upsert_photo(
@@ -633,16 +824,19 @@ mod tests {
             )
             .unwrap();
 
-        assert!(db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0]).is_err());
         assert!(
-            db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+            db.save_image_embedding(photo_id, &[1.0; CLIP_EMBEDDING_DIMENSIONS - 1])
+                .is_err()
+        );
+        assert!(
+            db.save_image_embedding(photo_id, &[1.0; CLIP_EMBEDDING_DIMENSIONS])
                 .is_ok()
         );
     }
 
     #[test]
     fn image_embedding_presence_controls_candidates() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = db
             .upsert_photo(
@@ -660,7 +854,7 @@ mod tests {
             db.photos_missing_image_embedding(Some(10)).unwrap().len(),
             1
         );
-        db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+        db.save_image_embedding(photo_id, &[1.0; CLIP_EMBEDDING_DIMENSIONS])
             .unwrap();
         assert_eq!(
             db.photos_missing_image_embedding(Some(10)).unwrap().len(),
@@ -670,7 +864,7 @@ mod tests {
 
     #[test]
     fn changed_file_resets_derived_data_and_embeddings() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = db
             .upsert_photo(
@@ -707,7 +901,7 @@ mod tests {
             },
         )
         .unwrap();
-        db.save_image_embedding(photo_id, &[1.0, 2.0, 3.0, 4.0])
+        db.save_image_embedding(photo_id, &[1.0; CLIP_EMBEDDING_DIMENSIONS])
             .unwrap();
         db.replace_faces(photo_id, &[face_detection(0)]).unwrap();
 
@@ -734,7 +928,7 @@ mod tests {
 
     #[test]
     fn geo_presence_controls_candidates() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = db
             .upsert_photo(
@@ -778,7 +972,7 @@ mod tests {
 
     #[test]
     fn face_status_allows_zero_face_photos() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = insert_test_photo(&db, scan_id);
 
@@ -789,8 +983,48 @@ mod tests {
     }
 
     #[test]
+    fn search_combines_embeddings_and_geo_text() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let scan_id = db.begin_scan().unwrap();
+        let vector_photo_id = insert_test_photo(&db, scan_id);
+        let geo_photo_id = db
+            .upsert_photo(
+                &NewPhoto {
+                    path: "/tmp/marseille.jpg".into(),
+                    blake3_hash: "def".into(),
+                    file_size: 1,
+                    modified_at_unix: 2,
+                },
+                scan_id,
+            )
+            .unwrap();
+
+        db.save_image_embedding(vector_photo_id, &[1.0; CLIP_EMBEDDING_DIMENSIONS])
+            .unwrap();
+        db.save_geo_location(
+            geo_photo_id,
+            &GeoLocation {
+                city: Some("Marseille".into()),
+                region: Some("Provence-Alpes-Cote d'Azur".into()),
+                country: Some("France".into()),
+                country_code: Some("FR".into()),
+                label: Some("Marseille, Provence-Alpes-Cote d'Azur, France".into()),
+            },
+        )
+        .unwrap();
+
+        let results = db
+            .search_photos("Marseille", &[1.0; CLIP_EMBEDDING_DIMENSIONS], 10)
+            .unwrap();
+        let ids = results.iter().map(|result| result.id).collect::<Vec<_>>();
+
+        assert!(ids.contains(&vector_photo_id));
+        assert!(ids.contains(&geo_photo_id));
+    }
+
+    #[test]
     fn stores_multiple_faces_per_photo() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = insert_test_photo(&db, scan_id);
 
@@ -802,7 +1036,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_face_embedding_dimension() {
-        let db = Database::open(Path::new(":memory:"), 4).unwrap();
+        let db = Database::open(Path::new(":memory:")).unwrap();
         let scan_id = db.begin_scan().unwrap();
         let photo_id = insert_test_photo(&db, scan_id);
         let mut face = face_detection(0);

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use image::{DynamicImage, imageops::FilterType};
 use imageproc::gradients::{horizontal_sobel, vertical_sobel};
+use rayon::prelude::*;
 use tracing::{info, warn};
 
 use crate::{
@@ -21,19 +22,26 @@ impl BatchProcessor for QualityProcessor {
         let mut done = 0;
         let mut failed = 0;
 
-        for photo in photos {
-            let _ = (&photo.blake3_hash, photo.width, photo.height);
-            match open_image(photo.path.as_ref()).map(|img| compute_quality(&img)) {
+        let results = photos
+            .par_iter()
+            .map(|photo| {
+                let result = open_image(photo.path.as_ref()).map(|img| compute_quality(&img));
+                pb.inc(1);
+                (photo.id, photo.path.clone(), result)
+            })
+            .collect::<Vec<_>>();
+
+        for (photo_id, path, result) in results {
+            match result {
                 Ok(quality) => {
-                    ctx.db.save_quality(photo.id, &quality)?;
+                    ctx.db.save_quality(photo_id, &quality)?;
                     done += 1;
                 }
                 Err(error) => {
                     failed += 1;
-                    warn!(path = %photo.path, %error, "failed to compute quality");
+                    warn!(path = %path, %error, "failed to compute quality");
                 }
             }
-            pb.inc(1);
         }
 
         pb.finish_and_clear();

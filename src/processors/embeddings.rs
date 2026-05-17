@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
 use open_clip_inference::{TextEmbedder, VisionEmbedder};
+use rayon::prelude::*;
 use tracing::{info, warn};
 
 use crate::{app::AppContext, image_io::open_image, processors::progress, traits::BatchProcessor};
 
 const MOBILE_CLIP_MODEL_ID: &str = "RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX";
+const CLIP_IMAGE_BATCH_SIZE: usize = 16;
+const CLIP_TEXT_BATCH_SIZE: usize = 64;
 
 pub struct ImageEmbeddingProcessor;
 pub struct OcrTextEmbeddingProcessor;
@@ -25,28 +28,61 @@ impl BatchProcessor for ImageEmbeddingProcessor {
         let mut done = 0;
         let mut failed = 0;
 
-        for photo in photos {
-            let _ = (&photo.blake3_hash, photo.width, photo.height);
-            let result = (|| -> Result<()> {
-                let img = open_image(photo.path.as_ref())?;
-                let embedding = embedder
-                    .embed_image(&img)
-                    .context("failed to generate image embedding")?;
-                let vector = embedding.iter().copied().collect::<Vec<_>>();
-                ctx.db.save_image_embedding(photo.id, &vector)?;
-                Ok(())
-            })();
+        for chunk in photos.chunks(CLIP_IMAGE_BATCH_SIZE) {
+            let decoded = chunk
+                .par_iter()
+                .map(|photo| {
+                    (
+                        photo.id,
+                        photo.path.clone(),
+                        open_image(photo.path.as_ref()),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-            match result {
-                Ok(()) => {
-                    done += 1;
-                }
-                Err(error) => {
-                    failed += 1;
-                    warn!(path = %photo.path, %error, "image embedding failed");
+            let mut batch = Vec::new();
+            for (photo_id, path, result) in decoded {
+                match result {
+                    Ok(img) => batch.push((photo_id, path, img)),
+                    Err(error) => {
+                        failed += 1;
+                        pb.inc(1);
+                        warn!(path = %path, %error, "image embedding failed");
+                    }
                 }
             }
-            pb.inc(1);
+
+            if batch.is_empty() {
+                continue;
+            }
+
+            let images = batch
+                .iter()
+                .map(|(_, _, img)| img.clone())
+                .collect::<Vec<_>>();
+
+            match embedder
+                .embed_images(&images)
+                .context("failed to generate image embeddings")
+            {
+                Ok(embeddings) => {
+                    for ((photo_id, _path, _img), embedding) in
+                        batch.iter().zip(embeddings.outer_iter())
+                    {
+                        let vector = embedding.iter().copied().collect::<Vec<_>>();
+                        ctx.db.save_image_embedding(*photo_id, &vector)?;
+                        done += 1;
+                        pb.inc(1);
+                    }
+                }
+                Err(error) => {
+                    failed += batch.len();
+                    for (_, path, _) in batch {
+                        pb.inc(1);
+                        warn!(path = %path, %error, "image embedding failed");
+                    }
+                }
+            }
         }
 
         pb.finish_and_clear();
@@ -75,27 +111,32 @@ impl BatchProcessor for OcrTextEmbeddingProcessor {
         let mut done = 0;
         let mut failed = 0;
 
-        for (photo, text) in photos {
-            let _ = (&photo.blake3_hash, photo.width, photo.height);
-            let result = (|| -> Result<()> {
-                let embedding = embedder
-                    .embed_text(&text)
-                    .context("failed to generate OCR text embedding")?;
-                let vector = embedding.iter().copied().collect::<Vec<_>>();
-                ctx.db.save_ocr_text_embedding(photo.id, &vector)?;
-                Ok(())
-            })();
+        for chunk in photos.chunks(CLIP_TEXT_BATCH_SIZE) {
+            let texts = chunk
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>();
 
-            match result {
-                Ok(()) => {
-                    done += 1;
+            match embedder
+                .embed_texts(&texts)
+                .context("failed to generate OCR text embeddings")
+            {
+                Ok(embeddings) => {
+                    for ((photo, _text), embedding) in chunk.iter().zip(embeddings.outer_iter()) {
+                        let vector = embedding.iter().copied().collect::<Vec<_>>();
+                        ctx.db.save_ocr_text_embedding(photo.id, &vector)?;
+                        done += 1;
+                        pb.inc(1);
+                    }
                 }
                 Err(error) => {
-                    failed += 1;
-                    warn!(path = %photo.path, %error, "OCR text embedding failed");
+                    failed += chunk.len();
+                    for (photo, _text) in chunk {
+                        pb.inc(1);
+                        warn!(path = %photo.path, %error, "OCR text embedding failed");
+                    }
                 }
             }
-            pb.inc(1);
         }
 
         pb.finish_and_clear();

@@ -5,7 +5,7 @@ pub fn bar(len: usize, message: &'static str) -> ProgressBar {
     pb.set_message(message);
     pb.set_style(
         ProgressStyle::with_template(
-            "{spinner:.green} {msg:<18} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}",
+            "{spinner:.green} {msg:<18} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} eta {eta_precise} {per_sec}",
         )
         .expect("progress bar template is valid")
         .progress_chars("=> "),

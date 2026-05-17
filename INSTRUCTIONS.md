@@ -107,9 +107,6 @@ database_path = "iris.db"
 library_paths = ["./Photos"]
 ocr_models_dir = "./models"
 ocr_edge_density_threshold = 0.08
-scan_batch_size = 500
-process_batch_size = 128
-embedding_dimensions = 768
 ```
 
 ### Incremental detection
@@ -358,6 +355,7 @@ cargo run -- embed
 cargo run -- faces
 cargo run -- ocr
 cargo run -- quality
+cargo run -- serve
 cargo run -- all
 
 all is doing scan -> metadata -> geo -> quality -> embeddings -> faces -> lazy OCR

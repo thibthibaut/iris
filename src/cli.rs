@@ -25,5 +25,12 @@ pub enum Command {
     Faces,
     Ocr,
     ShowDb,
+    Serve {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
+    },
     All,
 }

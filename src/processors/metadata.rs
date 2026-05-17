@@ -2,6 +2,7 @@ use std::{fs::File, io::BufReader};
 
 use anyhow::Result;
 use exif::{In, Reader, Tag, Value};
+use rayon::prelude::*;
 use tracing::{info, warn};
 
 use crate::{
@@ -22,19 +23,26 @@ impl BatchProcessor for MetadataProcessor {
         let mut done = 0;
         let mut failed = 0;
 
-        for photo in photos {
-            let _ = (&photo.blake3_hash, photo.width, photo.height);
-            match extract_metadata(&photo.path) {
+        let results = photos
+            .par_iter()
+            .map(|photo| {
+                let result = extract_metadata(&photo.path);
+                pb.inc(1);
+                (photo.id, photo.path.clone(), result)
+            })
+            .collect::<Vec<_>>();
+
+        for (photo_id, path, result) in results {
+            match result {
                 Ok(metadata) => {
-                    ctx.db.save_metadata(photo.id, &metadata)?;
+                    ctx.db.save_metadata(photo_id, &metadata)?;
                     done += 1;
                 }
                 Err(error) => {
                     failed += 1;
-                    warn!(path = %photo.path, %error, "failed to extract metadata");
+                    warn!(path = %path, %error, "failed to extract metadata");
                 }
             }
-            pb.inc(1);
         }
 
         pb.finish_and_clear();
