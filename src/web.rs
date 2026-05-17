@@ -9,7 +9,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, Query, Request, State},
-    http::{StatusCode, header},
+    http::{StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -30,6 +30,7 @@ const SEARCH_LIMIT: usize = 48;
 struct WebState {
     db_path: PathBuf,
     text_embedder: Arc<Mutex<TextEmbedder>>,
+    base_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,11 +38,13 @@ struct SearchParams {
     q: Option<String>,
 }
 
-pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
+pub async fn serve(config: Config, host: String, port: u16, base_path: String) -> Result<()> {
     let db_path = config.database_path.clone();
+    let base_path = normalize_base_path(&base_path)?;
     info!(
         %host,
         port,
+        base_path = if base_path.is_empty() { "/" } else { &base_path },
         db_path = %db_path.display(),
         model = MOBILE_CLIP_MODEL_ID,
         "starting web server"
@@ -61,12 +64,19 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     let state = WebState {
         db_path,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
+        base_path: base_path.clone(),
     };
-    let app = Router::new()
+    let routes = Router::new()
         .route("/", get(index))
-        .route("/photos/:id", get(photo))
-        .with_state(state)
-        .layer(middleware::from_fn(log_request));
+        .route("/photos/:id", get(photo));
+    let app = if base_path.is_empty() {
+        routes
+    } else {
+        Router::new().nest(&base_path, routes)
+    }
+    .fallback(not_found)
+    .with_state(state)
+    .layer(middleware::from_fn(log_request));
     let address = format!("{host}:{port}");
     info!(address = %address, "binding web server");
     let listener = tokio::net::TcpListener::bind(&address)
@@ -79,6 +89,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     info!(
         requested_url = %format!("http://{address}"),
         bound_address = %bound_address,
+        base_path = if base_path.is_empty() { "/" } else { &base_path },
         "web server listening"
     );
     axum::serve(listener, app)
@@ -94,14 +105,26 @@ async fn log_request(request: Request, next: Next) -> Response {
 
     let response = next.run(request).await;
     let status = response.status();
-    info!(
-        %method,
-        path = %uri.path(),
-        query = uri.query().unwrap_or(""),
-        status = status.as_u16(),
-        elapsed_ms = elapsed_ms(start),
-        "http request completed"
-    );
+    let status_code = status.as_u16();
+    if status == StatusCode::NOT_FOUND {
+        warn!(
+            %method,
+            path = %uri.path(),
+            query = uri.query().unwrap_or(""),
+            status = status_code,
+            elapsed_ms = elapsed_ms(start),
+            "http request completed with 404"
+        );
+    } else {
+        info!(
+            %method,
+            path = %uri.path(),
+            query = uri.query().unwrap_or(""),
+            status = status_code,
+            elapsed_ms = elapsed_ms(start),
+            "http request completed"
+        );
+    }
 
     response
 }
@@ -136,6 +159,15 @@ async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Resp
                 .into_response()
         }
     }
+}
+
+async fn not_found(State(state): State<WebState>, uri: Uri) -> Response {
+    warn!(path = %uri.path(), "route not found");
+    (
+        StatusCode::NOT_FOUND,
+        Html(render_not_found(&state.base_path, uri.path())),
+    )
+        .into_response()
 }
 
 fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
@@ -193,7 +225,7 @@ fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
         "index page rendered"
     );
 
-    Ok(page_html(indexed_count, query, &results))
+    Ok(page_html(indexed_count, query, &results, &state.base_path))
 }
 
 fn read_photo(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'static str)>> {
@@ -221,7 +253,12 @@ fn elapsed_ms(start: Instant) -> u128 {
     start.elapsed().as_millis()
 }
 
-fn page_html(indexed_count: i64, query: Option<&str>, results: &[SearchResult]) -> String {
+fn page_html(
+    indexed_count: i64,
+    query: Option<&str>,
+    results: &[SearchResult],
+    base_path: &str,
+) -> String {
     let query_value = query.map_or_else(String::new, escape_html);
     let count = format_count(indexed_count);
     let results_html = if let Some(query) = query {
@@ -235,7 +272,10 @@ fn page_html(indexed_count: i64, query: Option<&str>, results: &[SearchResult]) 
                 r#"<section class="results"><div class="result-count">{} results for <strong>{}</strong></div><div class="grid">{}</div></section>"#,
                 results.len(),
                 escape_html(query),
-                results.iter().map(result_card).collect::<String>()
+                results
+                    .iter()
+                    .map(|result| result_card(result, base_path))
+                    .collect::<String>()
             )
         }
     } else {
@@ -277,7 +317,7 @@ button:hover {{ background: #0077ed; }}
 <section class="hero">
 <h1>Iris</h1>
 <p class="subtitle">{count} indexed photos in the library.</p>
-<form class="search" action="/" method="get">
+<form class="search" action="{root_path}" method="get">
 <input name="q" type="search" value="{query_value}" placeholder="Search places, text, objects, moments" autofocus>
 <button type="submit">Search</button>
 </form>
@@ -285,11 +325,12 @@ button:hover {{ background: #0077ed; }}
 {results_html}
 </main>
 </body>
-</html>"#
+</html>"#,
+        root_path = root_path(base_path),
     )
 }
 
-fn result_card(result: &SearchResult) -> String {
+fn result_card(result: &SearchResult, base_path: &str) -> String {
     let title = std::path::Path::new(&result.path)
         .file_name()
         .and_then(|value| value.to_str())
@@ -311,18 +352,80 @@ fn result_card(result: &SearchResult) -> String {
     let relevance = format!("{:.0}% match", (result.score * 100.0).clamp(0.0, 100.0));
 
     format!(
-        r#"<article class="card" title="{}"><img class="thumb" src="/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></article>"#,
+        r#"<article class="card" title="{}"><img class="thumb" src="{}/photos/{}" loading="lazy" alt=""><div class="meta"><div class="name">{}</div><div class="detail">{}{dimensions}{quality}</div></div></article>"#,
         escape_html(&relevance),
+        base_path,
         result.id,
         escape_html(title),
         escape_html(detail),
     )
 }
 
+fn normalize_base_path(base_path: &str) -> Result<String> {
+    let base_path = base_path.trim();
+    if base_path.is_empty() || base_path == "/" {
+        return Ok(String::new());
+    }
+
+    anyhow::ensure!(
+        base_path.starts_with('/'),
+        "web base path must start with '/', got {base_path}"
+    );
+    anyhow::ensure!(
+        base_path
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')),
+        "web base path contains unsupported characters: {base_path}"
+    );
+    Ok(base_path.trim_end_matches('/').to_string())
+}
+
+fn root_path(base_path: &str) -> String {
+    if base_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{base_path}/")
+    }
+}
+
 fn render_error(message: &str) -> String {
     format!(
         r#"<!doctype html><title>Iris</title><body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:48px"><h1>Iris</h1><p>{}</p></body>"#,
         escape_html(message)
+    )
+}
+
+fn render_not_found(base_path: &str, path: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iris - Not Found</title>
+<style>
+:root {{ color-scheme: light; --bg: #f5f5f7; --panel: rgba(255,255,255,.78); --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08); --blue: #0071e3; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; color: var(--text); background: radial-gradient(circle at top, #fff 0, var(--bg) 42rem); }}
+.panel {{ width: min(520px, calc(100% - 32px)); padding: 42px; border: 1px solid var(--line); border-radius: 32px; text-align: center; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); backdrop-filter: blur(20px); }}
+.code {{ margin: 0 0 14px; color: var(--muted); font-size: 15px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }}
+h1 {{ margin: 0; font-size: clamp(38px, 8vw, 64px); line-height: .95; letter-spacing: -.055em; }}
+p {{ margin: 18px 0 28px; color: var(--muted); font-size: 17px; line-height: 1.45; }}
+a {{ display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 18px; border-radius: 999px; color: #fff; background: var(--blue); text-decoration: none; font-weight: 650; }}
+code {{ padding: 2px 6px; border-radius: 7px; background: rgba(0,0,0,.06); color: var(--text); }}
+</style>
+</head>
+<body>
+<main class="panel">
+<p class="code">404</p>
+<h1>Page not found</h1>
+<p>Iris does not have a route for <code>{}</code>.</p>
+<a href="{}">Back to Iris</a>
+</main>
+</body>
+</html>"#,
+        escape_html(path),
+        root_path(base_path),
     )
 }
 
@@ -381,5 +484,41 @@ mod tests {
     fn formats_counts() {
         assert_eq!(format_count(123), "123");
         assert_eq!(format_count(1234), "1,234");
+    }
+
+    #[test]
+    fn normalizes_base_paths() {
+        assert_eq!(normalize_base_path("/").unwrap(), "");
+        assert_eq!(normalize_base_path("/iris/").unwrap(), "/iris");
+        assert!(normalize_base_path("iris").is_err());
+        assert!(normalize_base_path("/iris?bad").is_err());
+    }
+
+    #[test]
+    fn renders_prefixed_links() {
+        let html = page_html(1, None, &[], "/iris");
+        assert!(html.contains(r#"action="/iris/""#));
+
+        let result = SearchResult {
+            id: 7,
+            path: "/tmp/photo.jpg".into(),
+            taken_at: None,
+            camera_model: None,
+            geo_label: None,
+            quality_score: None,
+            width: None,
+            height: None,
+            score: 0.5,
+        };
+        let card = result_card(&result, "/iris");
+        assert!(card.contains(r#"src="/iris/photos/7""#));
+    }
+
+    #[test]
+    fn renders_prefixed_404_page() {
+        let html = render_not_found("/iris", "/iris/missing");
+        assert!(html.contains("Page not found"));
+        assert!(html.contains(r#"href="/iris/""#));
+        assert!(html.contains("/iris/missing"));
     }
 }
