@@ -39,6 +39,37 @@ pub struct SearchResult {
     pub score: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct FaceEmbeddingRow {
+    pub face_id: i64,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceClusterRunParams {
+    pub min_cluster_size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceClusterAssignmentInput {
+    pub face_id: i64,
+    pub distance_to_centroid: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceClusterInput {
+    pub cluster_label: i32,
+    pub centroid: Vec<f32>,
+    pub representative_face_id: i64,
+    pub assignments: Vec<FaceClusterAssignmentInput>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FaceClusterSaveSummary {
+    pub created_persons: usize,
+    pub assigned_faces: usize,
+}
+
 pub struct Database {
     conn: RefCell<Connection>,
 }
@@ -418,6 +449,192 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         Ok(())
     }
 
+    pub fn face_embeddings_for_clustering(&self) -> Result<Vec<FaceEmbeddingRow>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT faces.id, vec_face_embeddings.embedding
+FROM faces
+JOIN photos ON photos.id = faces.photo_id
+JOIN vec_face_embeddings ON vec_face_embeddings.rowid = faces.id
+WHERE photos.missing = 0
+ORDER BY faces.id
+"#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let face_id = row.get(0)?;
+            let bytes = row.get::<_, Vec<u8>>(1)?;
+            Ok((face_id, bytes))
+        })?;
+
+        rows.map(|row| {
+            let (face_id, bytes) = row?;
+            Ok(FaceEmbeddingRow {
+                face_id,
+                embedding: decode_f32_vec(&bytes, FACE_EMBEDDING_DIMENSIONS)?,
+            })
+        })
+        .collect()
+    }
+
+    pub fn start_face_cluster_run(&self, params: &FaceClusterRunParams) -> Result<i64> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.borrow().execute(
+            r#"
+INSERT INTO face_cluster_runs(
+  started_at_unix, status, algorithm, min_cluster_size, min_samples, match_threshold
+)
+VALUES (?, 'running', 'hdbscan', ?, ?, ?)
+"#,
+            params![
+                now,
+                i64::try_from(params.min_cluster_size).context("min_cluster_size is too large")?,
+                0_i64,
+                0.0_f64,
+            ],
+        )?;
+        Ok(self.conn.borrow().last_insert_rowid())
+    }
+
+    pub fn clear_face_clusters(&self) -> Result<()> {
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM face_person_assignments", [])?;
+        tx.execute("DELETE FROM persons", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn finish_empty_face_cluster_run(
+        &self,
+        run_id: i64,
+        status: &str,
+        input_faces: usize,
+        noise_faces: usize,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.borrow().execute(
+            r#"
+UPDATE face_cluster_runs
+SET finished_at_unix = ?, status = ?, input_faces = ?, clustered_faces = 0,
+    noise_faces = ?, cluster_count = 0
+WHERE id = ?
+"#,
+            params![
+                now,
+                status,
+                i64::try_from(input_faces).context("input face count is too large")?,
+                i64::try_from(noise_faces).context("noise face count is too large")?,
+                run_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn fail_face_cluster_run(&self, run_id: i64, error: &str) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.borrow().execute(
+            r#"
+UPDATE face_cluster_runs
+SET finished_at_unix = ?, status = 'failed', error = ?
+WHERE id = ?
+"#,
+            params![now, error, run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_face_clusters(
+        &self,
+        run_id: i64,
+        input_faces: usize,
+        noise_faces: usize,
+        clusters: &[FaceClusterInput],
+    ) -> Result<FaceClusterSaveSummary> {
+        anyhow::ensure!(!clusters.is_empty(), "clusters must not be empty");
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+        let now = chrono::Utc::now().timestamp();
+        let mut created_persons = 0;
+        let mut assigned_faces = 0;
+
+        tx.execute("DELETE FROM face_person_assignments", [])?;
+        tx.execute("DELETE FROM persons", [])?;
+
+        for cluster in clusters {
+            anyhow::ensure!(
+                cluster.centroid.len() == FACE_EMBEDDING_DIMENSIONS,
+                "face cluster centroid dimension mismatch: expected {}, got {}",
+                FACE_EMBEDDING_DIMENSIONS,
+                cluster.centroid.len()
+            );
+
+            let centroid_bytes = encode_f32_vec(&cluster.centroid);
+            tx.execute(
+                r#"
+INSERT INTO persons(
+  created_at_unix, updated_at_unix, active, representative_face_id, centroid,
+  face_count, last_seen_cluster_run_id
+)
+VALUES (?, ?, 1, ?, ?, ?, ?)
+"#,
+                params![
+                    now,
+                    now,
+                    cluster.representative_face_id,
+                    centroid_bytes,
+                    i64::try_from(cluster.assignments.len()).context("face count is too large")?,
+                    run_id,
+                ],
+            )?;
+            created_persons += 1;
+            let person_id = tx.last_insert_rowid();
+
+            for assignment in &cluster.assignments {
+                tx.execute(
+                    r#"
+INSERT INTO face_person_assignments(
+  face_id, person_id, cluster_run_id, cluster_label, distance_to_centroid, assigned_at_unix
+)
+VALUES (?, ?, ?, ?, ?, ?)
+"#,
+                    params![
+                        assignment.face_id,
+                        person_id,
+                        run_id,
+                        cluster.cluster_label,
+                        assignment.distance_to_centroid,
+                        now,
+                    ],
+                )?;
+                assigned_faces += 1;
+            }
+        }
+
+        tx.execute(
+            r#"
+UPDATE face_cluster_runs
+SET finished_at_unix = ?, status = 'done', input_faces = ?, clustered_faces = ?,
+    noise_faces = ?, cluster_count = ?
+WHERE id = ?
+"#,
+            params![
+                now,
+                i64::try_from(input_faces).context("input face count is too large")?,
+                i64::try_from(assigned_faces).context("assigned face count is too large")?,
+                i64::try_from(noise_faces).context("noise face count is too large")?,
+                i64::try_from(clusters.len()).context("cluster count is too large")?,
+                run_id,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(FaceClusterSaveSummary {
+            created_persons,
+            assigned_faces,
+        })
+    }
+
     pub fn stats(&self) -> Result<(i64, i64)> {
         self.conn
             .borrow()
@@ -785,6 +1002,29 @@ fn delete_faces_for_photo_tx(tx: &rusqlite::Transaction<'_>, photo_id: i64) -> R
 
     tx.execute("DELETE FROM faces WHERE photo_id = ?", params![photo_id])?;
     Ok(())
+}
+
+fn encode_f32_vec(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
+fn decode_f32_vec(bytes: &[u8], dimensions: usize) -> Result<Vec<f32>> {
+    let expected_len = dimensions * std::mem::size_of::<f32>();
+    anyhow::ensure!(
+        bytes.len() == expected_len,
+        "embedding byte length mismatch: expected {}, got {}",
+        expected_len,
+        bytes.len()
+    );
+
+    Ok(bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("chunk length is checked")))
+        .collect())
 }
 
 fn register_sqlite_vec() {

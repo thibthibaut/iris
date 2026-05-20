@@ -20,9 +20,9 @@ use crate::cli::{Cli, Command};
 use crate::config::Config;
 use crate::db::Database;
 use crate::processors::{
-    DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor, LazyOcrProcessor,
-    MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor,
-    WebpCacheProcessor, run_index,
+    ClusterFacesProcessor, DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor,
+    LazyOcrProcessor, MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor,
+    ReverseGeoProcessor, WebpCacheProcessor, run_index,
 };
 use crate::traits::BatchProcessor;
 
@@ -46,6 +46,7 @@ fn main() -> Result<()> {
             OcrTextEmbeddingProcessor.run(&ctx)
         }
         Command::Faces => FaceEmbeddingProcessor.run(&ctx),
+        Command::ClusterFaces => ClusterFacesProcessor.run(&ctx),
         Command::Ocr => LazyOcrProcessor.run(&ctx),
         Command::WebpCache => WebpCacheProcessor.run(&ctx),
         Command::ShowDb => show_db(&ctx),

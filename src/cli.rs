@@ -23,6 +23,7 @@ pub enum Command {
     Quality,
     Embed,
     Faces,
+    ClusterFaces,
     Ocr,
     WebpCache,
     ShowDb,

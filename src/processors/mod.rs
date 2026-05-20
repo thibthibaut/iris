@@ -1,3 +1,4 @@
+mod cluster_faces;
 mod discovery;
 mod embeddings;
 mod faces;
@@ -12,6 +13,7 @@ use anyhow::Result;
 
 use crate::{app::AppContext, traits::BatchProcessor};
 
+pub use cluster_faces::ClusterFacesProcessor;
 pub use discovery::DiscoveryProcessor;
 pub use embeddings::{ImageEmbeddingProcessor, OcrTextEmbeddingProcessor};
 pub use faces::FaceEmbeddingProcessor;

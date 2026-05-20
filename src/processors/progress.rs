@@ -18,7 +18,7 @@ pub fn spinner(message: &'static str) -> ProgressBar {
     pb.set_message(message);
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb.set_style(
-        ProgressStyle::with_template("{spinner:.green} {msg:<18} {pos} files")
+        ProgressStyle::with_template("{spinner:.green} {msg:<18} [{elapsed_precise}]")
             .expect("progress spinner template is valid"),
     );
     pb

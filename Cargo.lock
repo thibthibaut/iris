@@ -1522,6 +1522,7 @@ checksum = "466aa8bfaa22c81efcf67c84e6ad046de13a05c6cc9d41a5094361bff464247a"
 dependencies = [
  "kdtree",
  "num-traits",
+ "rayon",
 ]
 
 [[package]]
@@ -1948,6 +1949,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0175f63815ce00183bf755155ad0cb48c65226c5d17a724e369c25418d2b7699"
 
 [[package]]
+name = "innr"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2620dc068ffa17fc947d5c1b4b242dda650717d5925e5dcfdcd00b8f1a3119db"
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1975,10 +1982,12 @@ dependencies = [
  "chrono",
  "clap",
  "face_id",
+ "hdbscan",
  "heic",
  "image",
  "imageproc",
  "indicatif",
+ "innr",
  "isocountry",
  "kamadak-exif",
  "libvips",

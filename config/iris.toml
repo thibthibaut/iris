@@ -2,3 +2,6 @@ database_path = "iris.db"
 library_paths = ["../photos_backup"]
 ocr_models_dir = "./models"
 ocr_edge_density_threshold = 0.08
+
+[faces]
+min_cluster_size = 6

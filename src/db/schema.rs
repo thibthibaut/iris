@@ -70,6 +70,48 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 
 CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
+
+CREATE TABLE IF NOT EXISTS persons (
+  id INTEGER PRIMARY KEY,
+  display_name TEXT,
+  created_at_unix INTEGER NOT NULL,
+  updated_at_unix INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  representative_face_id INTEGER REFERENCES faces(id) ON DELETE SET NULL,
+  centroid BLOB NOT NULL,
+  face_count INTEGER NOT NULL DEFAULT 0,
+  last_seen_cluster_run_id INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_persons_active ON persons(active);
+
+CREATE TABLE IF NOT EXISTS face_cluster_runs (
+  id INTEGER PRIMARY KEY,
+  started_at_unix INTEGER NOT NULL,
+  finished_at_unix INTEGER,
+  status TEXT NOT NULL,
+  algorithm TEXT NOT NULL,
+  min_cluster_size INTEGER NOT NULL,
+  min_samples INTEGER NOT NULL,
+  match_threshold REAL NOT NULL,
+  input_faces INTEGER NOT NULL DEFAULT 0,
+  clustered_faces INTEGER NOT NULL DEFAULT 0,
+  noise_faces INTEGER NOT NULL DEFAULT 0,
+  cluster_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS face_person_assignments (
+  face_id INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
+  person_id INTEGER NOT NULL REFERENCES persons(id),
+  cluster_run_id INTEGER NOT NULL REFERENCES face_cluster_runs(id),
+  cluster_label INTEGER NOT NULL,
+  distance_to_centroid REAL,
+  assigned_at_unix INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_face_person_assignments_person_id ON face_person_assignments(person_id);
+CREATE INDEX IF NOT EXISTS idx_face_person_assignments_cluster_run_id ON face_person_assignments(cluster_run_id);
 "#,
     )?;
 
