@@ -1,2 +1,12 @@
 [alias]
+scan = "run -- scan"
+metadata = "run -- metadata"
+geo = "run -- geo"
+quality = "run -- quality"
+embed = "run -- embed"
+faces = "run -- faces"
+ocr = "run -- ocr"
+webp-cache = "run -- webp-cache"
 show-db = "run -- show-db"
+serve = "run -- serve"
+index = "run -- index"

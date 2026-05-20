@@ -22,7 +22,7 @@ use crate::db::Database;
 use crate::processors::{
     DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor, LazyOcrProcessor,
     MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor, ReverseGeoProcessor,
-    WebpCacheProcessor, run_all,
+    WebpCacheProcessor, run_index,
 };
 use crate::traits::BatchProcessor;
 
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(web::serve(ctx.config, host, port))
         }
-        Command::All => run_all(&ctx),
+        Command::Index => run_index(&ctx),
     }
 }
 

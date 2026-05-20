@@ -21,7 +21,7 @@ pub use metadata::MetadataProcessor;
 pub use ocr::LazyOcrProcessor;
 pub use webp_cache::WebpCacheProcessor;
 
-pub fn run_all(ctx: &AppContext) -> Result<()> {
+pub fn run_index(ctx: &AppContext) -> Result<()> {
     DiscoveryProcessor.run(ctx)?;
     MetadataProcessor.run(ctx)?;
     ReverseGeoProcessor.run(ctx)?;

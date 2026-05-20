@@ -33,5 +33,5 @@ pub enum Command {
         #[arg(long, default_value_t = 3000)]
         port: u16,
     },
-    All,
+    Index,
 }
