@@ -70,6 +70,33 @@ pub struct FaceClusterSaveSummary {
     pub assigned_faces: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct PersonSummary {
+    pub id: i64,
+    pub display_name: Option<String>,
+    pub face_count: i64,
+    pub representative_face: Option<PersonFace>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonDetail {
+    pub id: i64,
+    pub display_name: Option<String>,
+    pub face_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonFace {
+    pub face_id: i64,
+    pub photo_id: i64,
+    pub bbox_x1: f64,
+    pub bbox_y1: f64,
+    pub bbox_x2: f64,
+    pub bbox_y2: f64,
+    pub photo_width: Option<i64>,
+    pub photo_height: Option<i64>,
+}
+
 pub struct Database {
     conn: RefCell<Connection>,
 }
@@ -693,6 +720,131 @@ WHERE id = ? AND missing = 0
             )
             .optional()
             .context("failed to read photo detail")
+    }
+
+    pub fn people(&self) -> Result<Vec<PersonSummary>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT
+  persons.id,
+  persons.display_name,
+  persons.face_count,
+  faces.id,
+  faces.photo_id,
+  faces.bbox_x1,
+  faces.bbox_y1,
+  faces.bbox_x2,
+  faces.bbox_y2,
+  photos.width,
+  photos.height
+FROM persons
+LEFT JOIN faces ON faces.id = persons.representative_face_id
+LEFT JOIN photos ON photos.id = faces.photo_id AND photos.missing = 0
+WHERE persons.active = 1
+ORDER BY persons.face_count DESC, persons.id
+"#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let face_id = row.get::<_, Option<i64>>(3)?;
+            let photo_id = row.get::<_, Option<i64>>(4)?;
+            let representative_face = match (face_id, photo_id) {
+                (Some(face_id), Some(photo_id)) => Some(PersonFace {
+                    face_id,
+                    photo_id,
+                    bbox_x1: row.get(5)?,
+                    bbox_y1: row.get(6)?,
+                    bbox_x2: row.get(7)?,
+                    bbox_y2: row.get(8)?,
+                    photo_width: row.get(9)?,
+                    photo_height: row.get(10)?,
+                }),
+                _ => None,
+            };
+
+            Ok(PersonSummary {
+                id: row.get(0)?,
+                display_name: row.get(1)?,
+                face_count: row.get(2)?,
+                representative_face,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read people")
+    }
+
+    pub fn person_detail(&self, person_id: i64) -> Result<Option<PersonDetail>> {
+        self.conn
+            .borrow()
+            .query_row(
+                r#"
+SELECT id, display_name, face_count
+FROM persons
+WHERE id = ? AND active = 1
+"#,
+                params![person_id],
+                |row| {
+                    Ok(PersonDetail {
+                        id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        face_count: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read person detail")
+    }
+
+    pub fn person_faces(&self, person_id: i64) -> Result<Vec<PersonFace>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT
+  faces.id,
+  faces.photo_id,
+  faces.bbox_x1,
+  faces.bbox_y1,
+  faces.bbox_x2,
+  faces.bbox_y2,
+  photos.width,
+  photos.height
+FROM face_person_assignments
+JOIN faces ON faces.id = face_person_assignments.face_id
+JOIN photos ON photos.id = faces.photo_id
+WHERE face_person_assignments.person_id = ?
+  AND photos.missing = 0
+ORDER BY face_person_assignments.distance_to_centroid ASC, faces.id
+"#,
+        )?;
+        let rows = stmt.query_map(params![person_id], |row| {
+            Ok(PersonFace {
+                face_id: row.get(0)?,
+                photo_id: row.get(1)?,
+                bbox_x1: row.get(2)?,
+                bbox_y1: row.get(3)?,
+                bbox_x2: row.get(4)?,
+                bbox_y2: row.get(5)?,
+                photo_width: row.get(6)?,
+                photo_height: row.get(7)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read person faces")
+    }
+
+    pub fn update_person_name(&self, person_id: i64, display_name: Option<&str>) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let changed = self.conn.borrow().execute(
+            r#"
+UPDATE persons
+SET display_name = ?, updated_at_unix = ?
+WHERE id = ? AND active = 1
+"#,
+            params![display_name, now, person_id],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn heic_photos(&self, limit: Option<usize>) -> Result<Vec<(i64, String)>> {

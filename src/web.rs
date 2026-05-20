@@ -6,13 +6,13 @@ use std::{
 
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Form, Router,
     body::Body,
     extract::{Path, Query, Request, State},
     http::{StatusCode, Uri, header},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
-    routing::get,
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{get, post},
 };
 use libvips::VipsApp;
 use open_clip_inference::TextEmbedder;
@@ -21,12 +21,13 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
-    db::{Database, SearchResult},
+    db::{Database, PersonDetail, PersonFace, PersonSummary, SearchResult},
     webp_cache,
 };
 
 const MOBILE_CLIP_MODEL_ID: &str = "RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX";
 const SEARCH_LIMIT: usize = 20;
+const FACE_CROP_PADDING: f64 = 1.8;
 
 #[derive(Clone)]
 struct WebState {
@@ -39,6 +40,11 @@ struct WebState {
 #[derive(Debug, Deserialize)]
 struct SearchParams {
     q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PersonNameForm {
+    display_name: String,
 }
 
 pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
@@ -80,6 +86,9 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
     };
     let app = Router::new()
         .route("/", get(index))
+        .route("/people", get(people))
+        .route("/people/:id", get(person_view))
+        .route("/people/:id/name", post(update_person_name))
         .route("/view/:id", get(photo_view))
         .route("/photos/:id", get(photo))
         .fallback(not_found)
@@ -165,6 +174,54 @@ async fn photo_view(State(state): State<WebState>, Path(photo_id): Path<i64>) ->
     }
 }
 
+async fn people(State(state): State<WebState>) -> Response {
+    match render_people(&state) {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            error!(%error, "failed to render people page");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn person_view(State(state): State<WebState>, Path(person_id): Path<i64>) -> Response {
+    match render_person_view(&state, person_id) {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Html(render_not_found("/people"))).into_response(),
+        Err(error) => {
+            error!(person_id, %error, "failed to render person page");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn update_person_name(
+    State(state): State<WebState>,
+    Path(person_id): Path<i64>,
+    Form(form): Form<PersonNameForm>,
+) -> Response {
+    match save_person_name(&state, person_id, &form.display_name) {
+        Ok(true) => Redirect::to(&format!("/people/{person_id}")).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Html(render_not_found("/people"))).into_response(),
+        Err(error) => {
+            error!(person_id, %error, "failed to update person name");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_error(&error.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Response {
     match photo_response(&state, photo_id) {
         Ok(Some((bytes, content_type))) => Response::builder()
@@ -197,6 +254,46 @@ fn render_photo_view(state: &WebState, photo_id: i64) -> Result<Option<String>> 
         "photo detail rendered"
     );
     Ok(Some(photo_page_html(&photo)))
+}
+
+fn render_people(state: &WebState) -> Result<String> {
+    let start = Instant::now();
+    let db = Database::open(&state.db_path)?;
+    let people = db.people()?;
+    info!(
+        people_count = people.len(),
+        elapsed_ms = elapsed_ms(start),
+        "people page rendered"
+    );
+    Ok(people_page_html(&people))
+}
+
+fn render_person_view(state: &WebState, person_id: i64) -> Result<Option<String>> {
+    let start = Instant::now();
+    let db = Database::open(&state.db_path)?;
+    let Some(person) = db.person_detail(person_id)? else {
+        warn!(person_id, "person not found");
+        return Ok(None);
+    };
+    let faces = db.person_faces(person_id)?;
+    info!(
+        person_id,
+        face_count = faces.len(),
+        elapsed_ms = elapsed_ms(start),
+        "person page rendered"
+    );
+    Ok(Some(person_page_html(&person, &faces)))
+}
+
+fn save_person_name(state: &WebState, person_id: i64, display_name: &str) -> Result<bool> {
+    let db = Database::open(&state.db_path)?;
+    let trimmed = display_name.trim();
+    let display_name = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    db.update_person_name(person_id, display_name)
 }
 
 async fn not_found(State(_state): State<WebState>, uri: Uri) -> Response {
@@ -364,6 +461,9 @@ main {{ width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 84px 0 5
 h1 {{ margin: 0; font-size: clamp(48px, 8vw, 88px); line-height: .95; letter-spacing: -.06em; font-weight: 700; }}
 .acronym {{ margin: 12px 0 0; color: var(--muted); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }}
 .subtitle {{ margin: 18px 0 30px; color: var(--muted); font-size: 19px; }}
+.hero-actions {{ display: flex; justify-content: center; margin: -12px 0 18px; }}
+.pill {{ display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); background: rgba(255,255,255,.64); text-decoration: none; font-weight: 650; box-shadow: 0 12px 32px rgba(0,0,0,.05); }}
+.pill:hover {{ background: rgba(255,255,255,.9); }}
 .search {{ display: flex; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 24px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); backdrop-filter: blur(20px); }}
 input {{ width: 100%; border: 0; outline: 0; background: transparent; padding: 15px 18px; font: inherit; font-size: 18px; color: var(--text); }}
 button {{ border: 0; border-radius: 18px; padding: 13px 20px; font: inherit; font-weight: 600; color: white; background: #0071e3; cursor: pointer; }}
@@ -386,6 +486,7 @@ button:hover {{ background: #0077ed; }}
 <h1>iris</h1>
 <p class="acronym">intelligent retrieval for image search</p>
 <p class="subtitle">{count} indexed photos in the library.</p>
+<div class="hero-actions"><a class="pill" href="/people">People</a></div>
 <form class="search" action="/" method="get">
 <input name="q" type="search" value="{query_value}" placeholder="Search places, text, objects, moments" autofocus>
 <button type="submit">Search</button>
@@ -504,6 +605,235 @@ h1 {{ margin: 0 0 18px; overflow-wrap: anywhere; font-size: 24px; line-height: 1
     )
 }
 
+fn people_page_html(people: &[PersonSummary]) -> String {
+    let people_html = if people.is_empty() {
+        r#"<section class="empty-panel"><h1>No people yet</h1><p>Run <code>cargo cluster-faces</code> after face indexing to build people clusters.</p></section>"#.to_string()
+    } else {
+        format!(
+            r#"<section class="people-grid">{}</section>"#,
+            people.iter().map(person_card).collect::<String>()
+        )
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>People - Iris</title>
+<style>
+:root {{ color-scheme: light; --bg: #f5f5f7; --panel: rgba(255,255,255,.78); --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08); --blue: #0071e3; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; color: var(--text); background: radial-gradient(circle at top, #fff 0, var(--bg) 42rem); }}
+main {{ width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 56px; }}
+.topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 34px; }}
+.brand {{ color: var(--text); text-decoration: none; font-size: 22px; font-weight: 700; letter-spacing: -.05em; }}
+.back {{ color: var(--muted); text-decoration: none; font-size: 15px; }}
+.heading {{ margin-bottom: 26px; }}
+h1 {{ margin: 0; font-size: clamp(42px, 7vw, 76px); line-height: .95; letter-spacing: -.055em; }}
+.subtitle {{ margin: 12px 0 0; color: var(--muted); font-size: 18px; }}
+.people-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 18px; }}
+.person-card {{ overflow: hidden; border: 1px solid var(--line); border-radius: 26px; color: inherit; text-decoration: none; background: var(--panel); box-shadow: 0 18px 50px rgba(0,0,0,.06); transition: transform .18s ease, box-shadow .18s ease; backdrop-filter: blur(20px); }}
+.person-card:hover {{ transform: translateY(-2px); box-shadow: 0 24px 60px rgba(0,0,0,.1); }}
+.face-crop {{ position: relative; display: block; width: 100%; aspect-ratio: 1; overflow: hidden; background: #e8e8ed; }}
+.face-crop img {{ position: absolute; display: block; max-width: none; height: auto; }}
+.face-crop img.full {{ inset: 0; width: 100%; height: 100%; object-fit: cover; }}
+.placeholder {{ display: grid; place-items: center; width: 100%; aspect-ratio: 1; color: var(--muted); background: #e8e8ed; font-size: 42px; font-weight: 700; }}
+.meta {{ padding: 14px 15px 16px; }}
+.name {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 15px; }}
+.detail {{ margin-top: 5px; color: var(--muted); font-size: 13px; }}
+.empty-panel {{ width: min(560px, 100%); padding: 38px; border: 1px solid var(--line); border-radius: 32px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); }}
+.empty-panel h1 {{ font-size: 34px; }}
+.empty-panel p {{ margin: 14px 0 0; color: var(--muted); line-height: 1.45; }}
+code {{ padding: 2px 6px; border-radius: 7px; background: rgba(0,0,0,.06); color: var(--text); }}
+@media (max-width: 640px) {{ main {{ width: min(100% - 24px, 1180px); padding-top: 18px; }} .people-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }} .person-card {{ border-radius: 20px; }} }}
+</style>
+</head>
+<body>
+<main>
+<nav class="topbar"><a class="brand" href="/">iris</a><a class="back" href="/">Back to search</a></nav>
+<section class="heading"><h1>People</h1><p class="subtitle">{} clustered people.</p></section>
+{}
+</main>
+</body>
+</html>"#,
+        people.len(),
+        people_html,
+    )
+}
+
+fn person_card(person: &PersonSummary) -> String {
+    let label = person_label(person.id, person.display_name.as_deref());
+    let face_count = format_face_count(person.face_count);
+    let face_html = person
+        .representative_face
+        .as_ref()
+        .map(face_crop_html)
+        .unwrap_or_else(|| placeholder_html(&label));
+
+    format!(
+        r#"<a class="person-card" href="/people/{}">{}<div class="meta"><div class="name">{}</div><div class="detail">{}</div></div></a>"#,
+        person.id,
+        face_html,
+        escape_html(&label),
+        escape_html(&face_count),
+    )
+}
+
+fn person_page_html(person: &PersonDetail, faces: &[PersonFace]) -> String {
+    let label = person_label(person.id, person.display_name.as_deref());
+    let name_value = person.display_name.as_deref().unwrap_or("");
+    let faces_html = if faces.is_empty() {
+        r#"<section class="empty-panel"><h1>No faces</h1><p>This person does not have any visible assigned faces.</p></section>"#.to_string()
+    } else {
+        format!(
+            r#"<section class="face-grid">{}</section>"#,
+            faces.iter().map(person_face_card).collect::<String>()
+        )
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{} - Iris</title>
+<style>
+:root {{ color-scheme: light; --bg: #f5f5f7; --panel: rgba(255,255,255,.82); --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08); --blue: #0071e3; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; color: var(--text); background: radial-gradient(circle at top, #fff 0, var(--bg) 42rem); }}
+main {{ width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 56px; }}
+.topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }}
+.brand {{ color: var(--text); text-decoration: none; font-size: 22px; font-weight: 700; letter-spacing: -.05em; }}
+.back {{ color: var(--muted); text-decoration: none; font-size: 15px; }}
+.person-header {{ display: grid; gap: 20px; margin-bottom: 26px; padding: 26px; border: 1px solid var(--line); border-radius: 32px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.08); backdrop-filter: blur(20px); }}
+h1 {{ margin: 0; font-size: clamp(38px, 7vw, 70px); line-height: .95; letter-spacing: -.055em; }}
+.subtitle {{ margin: 8px 0 0; color: var(--muted); font-size: 17px; }}
+.name-form {{ display: flex; align-items: center; gap: 10px; max-width: 560px; }}
+.name-form input {{ min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 18px; outline: 0; padding: 13px 15px; font: inherit; color: var(--text); background: rgba(255,255,255,.75); }}
+.name-form button {{ border: 0; border-radius: 18px; padding: 13px 18px; font: inherit; font-weight: 650; color: white; background: var(--blue); cursor: pointer; }}
+.face-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }}
+.face-card {{ overflow: hidden; border: 1px solid var(--line); border-radius: 22px; color: inherit; text-decoration: none; background: var(--panel); box-shadow: 0 18px 50px rgba(0,0,0,.06); transition: transform .18s ease, box-shadow .18s ease; }}
+.face-card:hover {{ transform: translateY(-2px); box-shadow: 0 24px 60px rgba(0,0,0,.1); }}
+.face-crop {{ position: relative; display: block; width: 100%; aspect-ratio: 1; overflow: hidden; background: #e8e8ed; }}
+.face-crop img {{ position: absolute; display: block; max-width: none; height: auto; }}
+.face-crop img.full {{ inset: 0; width: 100%; height: 100%; object-fit: cover; }}
+.face-meta {{ padding: 10px 12px 12px; color: var(--muted); font-size: 12px; }}
+.empty-panel {{ padding: 34px; border: 1px solid var(--line); border-radius: 30px; background: var(--panel); color: var(--muted); }}
+.empty-panel h1 {{ color: var(--text); font-size: 28px; }}
+@media (max-width: 640px) {{ main {{ width: min(100% - 24px, 1180px); padding-top: 18px; }} .name-form {{ align-items: stretch; flex-direction: column; }} .face-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }} }}
+</style>
+</head>
+<body>
+<main>
+<nav class="topbar"><a class="brand" href="/">iris</a><a class="back" href="/people">All people</a></nav>
+<section class="person-header">
+<div><h1>{}</h1><p class="subtitle">{}</p></div>
+<form class="name-form" action="/people/{}/name" method="post">
+<input name="display_name" value="{}" placeholder="Name this person" autocomplete="off">
+<button type="submit">Save name</button>
+</form>
+</section>
+{}
+</main>
+</body>
+</html>"#,
+        escape_html(&label),
+        escape_html(&label),
+        escape_html(&format_face_count(person.face_count)),
+        person.id,
+        escape_html(name_value),
+        faces_html,
+    )
+}
+
+fn person_face_card(face: &PersonFace) -> String {
+    format!(
+        r#"<a class="face-card" href="/view/{}">{}<div class="face-meta">Face #{}</div></a>"#,
+        face.photo_id,
+        face_crop_html(face),
+        face.face_id,
+    )
+}
+
+fn face_crop_html(face: &PersonFace) -> String {
+    if let Some(style) = face_crop_style(face) {
+        format!(
+            r#"<span class="face-crop"><img src="/photos/{}" loading="lazy" alt="" style="{}"></span>"#,
+            face.photo_id, style,
+        )
+    } else {
+        format!(
+            r#"<span class="face-crop"><img class="full" src="/photos/{}" loading="lazy" alt=""></span>"#,
+            face.photo_id,
+        )
+    }
+}
+
+fn face_crop_style(face: &PersonFace) -> Option<String> {
+    let width = face.photo_width? as f64;
+    let height = face.photo_height? as f64;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    let x1 = face.bbox_x1.clamp(0.0, 1.0) * width;
+    let y1 = face.bbox_y1.clamp(0.0, 1.0) * height;
+    let x2 = face.bbox_x2.clamp(0.0, 1.0) * width;
+    let y2 = face.bbox_y2.clamp(0.0, 1.0) * height;
+    let bbox_width = (x2 - x1).max(1.0);
+    let bbox_height = (y2 - y1).max(1.0);
+    let side = (bbox_width.max(bbox_height) * FACE_CROP_PADDING)
+        .min(width)
+        .min(height)
+        .max(1.0);
+    let center_x = x1 + bbox_width / 2.0;
+    let center_y = y1 + bbox_height / 2.0;
+    let crop_x = (center_x - side / 2.0).clamp(0.0, (width - side).max(0.0));
+    let crop_y = (center_y - side / 2.0).clamp(0.0, (height - side).max(0.0));
+
+    let crop_x_ratio = crop_x / width;
+    let crop_y_ratio = crop_y / height;
+    let crop_w_ratio = side / width;
+    let crop_h_ratio = side / height;
+    if crop_w_ratio <= 0.0 || crop_h_ratio <= 0.0 {
+        return None;
+    }
+
+    Some(format!(
+        "width:{:.5}%;left:{:.5}%;top:{:.5}%;",
+        100.0 / crop_w_ratio,
+        -100.0 * crop_x_ratio / crop_w_ratio,
+        -100.0 * crop_y_ratio / crop_h_ratio,
+    ))
+}
+
+fn placeholder_html(label: &str) -> String {
+    let initial = label.chars().next().unwrap_or('?');
+    format!(
+        r#"<span class="placeholder">{}</span>"#,
+        escape_html(&initial.to_string())
+    )
+}
+
+fn person_label(person_id: i64, display_name: Option<&str>) -> String {
+    display_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Person #{person_id}"))
+}
+
+fn format_face_count(face_count: i64) -> String {
+    if face_count == 1 {
+        "1 face".to_string()
+    } else {
+        format!("{} faces", format_count(face_count))
+    }
+}
+
 fn render_error(message: &str) -> String {
     format!(
         r#"<!doctype html><title>Iris</title><body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:48px"><h1>Iris</h1><p>{}</p></body>"#,
@@ -605,6 +935,7 @@ mod tests {
     fn renders_root_links() {
         let html = page_html(1, None, &[]);
         assert!(html.contains(r#"action="/""#));
+        assert!(html.contains(r#"href="/people""#));
 
         let result = SearchResult {
             id: 7,
@@ -641,6 +972,60 @@ mod tests {
         assert!(html.contains("Beach &amp; sun.heic"));
         assert!(html.contains("Marseille, France"));
         assert!(html.contains("3000 x 2000"));
+    }
+
+    #[test]
+    fn renders_people_pages() {
+        let face = PersonFace {
+            face_id: 11,
+            photo_id: 9,
+            bbox_x1: 0.25,
+            bbox_y1: 0.20,
+            bbox_x2: 0.45,
+            bbox_y2: 0.55,
+            photo_width: Some(3000),
+            photo_height: Some(2000),
+        };
+        let person = PersonSummary {
+            id: 3,
+            display_name: Some("Alice & Bob".into()),
+            face_count: 12,
+            representative_face: Some(face.clone()),
+        };
+
+        let people_html = people_page_html(&[person]);
+        assert!(people_html.contains(r#"href="/people/3""#));
+        assert!(people_html.contains("Alice &amp; Bob"));
+        assert!(people_html.contains(r#"src="/photos/9""#));
+
+        let detail = PersonDetail {
+            id: 3,
+            display_name: Some("Alice & Bob".into()),
+            face_count: 12,
+        };
+        let person_html = person_page_html(&detail, &[face]);
+        assert!(person_html.contains(r#"action="/people/3/name""#));
+        assert!(person_html.contains(r#"value="Alice &amp; Bob""#));
+        assert!(person_html.contains(r#"href="/view/9""#));
+    }
+
+    #[test]
+    fn computes_face_crop_style() {
+        let face = PersonFace {
+            face_id: 1,
+            photo_id: 2,
+            bbox_x1: 0.4,
+            bbox_y1: 0.3,
+            bbox_x2: 0.6,
+            bbox_y2: 0.5,
+            photo_width: Some(1000),
+            photo_height: Some(1000),
+        };
+
+        let style = face_crop_style(&face).unwrap();
+        assert!(style.contains("width:"));
+        assert!(style.contains("left:"));
+        assert!(style.contains("top:"));
     }
 
     #[test]
