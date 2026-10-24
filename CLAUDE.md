@@ -49,6 +49,7 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - Settings Overrides use dotted paths; a number indexes a list (`chapters.3.starts_at`).
 - `htmx.onLoad` gets the swapped child, not its container: re-init drag-and-drop on `document`.
 - Ingest failures are retried only by an explicit Re-run (failed ≠ pending).
+- Locked Spreads keep the geometry they were Locked with: after a margin change, "Relayout" them in the Spread editor.
 - Typst warns on variable fonts and silently falls back on unknown ones: print fonts in `assets/fonts/` are static instances; the variable originals for the web UI live in `assets/web-fonts/` (Typst scans font dirs recursively). Export preflight surfaces Typst warnings.
 - `render_print` gives both halves of a Spread the same (left, right) numbers.
 

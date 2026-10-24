@@ -64,6 +64,9 @@ fn one() -> f64 {
 pub struct GroupDef {
     pub key: String,
     pub name: String,
+    /// The Group Spread's title in Tunisian Arabic.
+    #[serde(default)]
+    pub title_ar: String,
     /// The Edition tied to this Group, if any (`friends` has none).
     pub edition: Option<String>,
 }
@@ -149,48 +152,48 @@ pub struct Design {
 
 impl Default for Settings {
     fn default() -> Self {
-        let chapter = |key: &str, fr: &str, weight: f64, starts_at: &str, prompts: &[&str]| {
+        let chapter = |key: &str, fr: &str, ar: &str, weight: f64, starts_at: &str, prompts: &[&str]| {
             ChapterDef {
                 key: key.into(),
                 title_fr: fr.into(),
-                title_ar: String::new(),
+                title_ar: ar.into(),
                 prompts: prompts.iter().map(|p| (*p).to_string()).collect(),
                 weight,
                 starts_at: Some(starts_at.into()),
             }
         };
         let chapters = vec![
-            chapter("prep_bride", "Les préparatifs de la mariée", 1.0, "09:00", &[
+            chapter("prep_bride", "Les préparatifs de la mariée", "تحضيرات العروسة", 1.0, "09:00", &[
                 "a bride getting ready, hair and make-up, in a bedroom",
                 "a wedding dress hanging, bridal shoes and jewellery",
             ]),
-            chapter("prep_groom", "Les préparatifs du marié", 0.8, "10:00", &[
+            chapter("prep_groom", "Les préparatifs du marié", "تحضيرات العريس", 0.8, "10:00", &[
                 "a groom getting dressed in a suit and tie",
                 "men getting ready in an apartment before a wedding",
             ]),
-            chapter("mairie_before", "Devant la mairie", 1.0, "13:15", &[
+            chapter("mairie_before", "Devant la mairie", "قدّام البلدية", 1.0, "13:15", &[
                 "wedding guests gathering outside a town hall",
                 "people waiting in a town hall hallway",
             ]),
-            chapter("mairie_ceremony", "La cérémonie", 1.4, "13:45", &[
+            chapter("mairie_ceremony", "La cérémonie", "الكتبة", 1.4, "13:45", &[
                 "a civil wedding ceremony inside a town hall wedding room",
                 "a couple exchanging wedding rings at a town hall",
             ]),
-            chapter("mairie_after", "La sortie de la mairie", 1.0, "14:30", &[
+            chapter("mairie_after", "La sortie de la mairie", "خرجة البلدية", 1.0, "14:30", &[
                 "a newly married couple leaving a town hall under applause",
                 "a large posed group photo of wedding guests on steps outside",
             ]),
-            chapter("bnf_couple", "Séance à la BNF", 1.3, "15:30", &[
+            chapter("bnf_couple", "Séance à la BNF", "تصاور في المكتبة", 1.3, "15:30", &[
                 "a couple posing for wedding portraits at a modern library",
             ]),
-            chapter("cocktail", "Le cocktail", 1.0, "18:00", &[
+            chapter("cocktail", "Le cocktail", "الكوكتال", 1.0, "18:00", &[
                 "wedding guests having drinks at an outdoor cocktail party",
             ]),
-            chapter("dinner", "Le dîner", 0.9, "20:30", &[
+            chapter("dinner", "Le dîner", "العشا", 0.9, "20:30", &[
                 "wedding guests seated at dinner tables in a restaurant",
                 "speeches and toasts at a wedding dinner",
             ]),
-            chapter("party", "La soirée", 1.0, "23:00", &[
+            chapter("party", "La soirée", "السهرية", 1.0, "23:00", &[
                 "people dancing at a wedding party at night",
                 "a wedding cake being cut",
             ]),
@@ -210,10 +213,10 @@ impl Default for Settings {
                 folder("diner et soiree", &["dinner", "party"]),
             ]),
             groups: vec![
-                GroupDef { key: "bride_family".into(), name: "Famille de la mariée".into(), edition: Some("bride_parents".into()) },
-                GroupDef { key: "groom_dad_family".into(), name: "Famille du papa du marié".into(), edition: Some("dad".into()) },
-                GroupDef { key: "groom_mom_family".into(), name: "Famille de la maman du marié".into(), edition: Some("mom".into()) },
-                GroupDef { key: "friends".into(), name: "Amis".into(), edition: None },
+                GroupDef { key: "bride_family".into(), name: "Famille de la mariée".into(), title_ar: "عايلة العروسة".into(), edition: Some("bride_parents".into()) },
+                GroupDef { key: "groom_dad_family".into(), name: "Famille du papa du marié".into(), title_ar: "عايلة بابا العريس".into(), edition: Some("dad".into()) },
+                GroupDef { key: "groom_mom_family".into(), name: "Famille de la maman du marié".into(), title_ar: "عايلة ماما العريس".into(), edition: Some("mom".into()) },
+                GroupDef { key: "friends".into(), name: "Amis".into(), title_ar: "الصحاب".into(), edition: None },
             ],
             editions: vec![
                 EditionDef { key: "ours".into(), name: "Nous".into(), group: None },
@@ -286,7 +289,7 @@ impl Default for Design {
             arabic_font: "Lalezar".into(),
             names: "Emna & Thibaut".into(),
             cover_date_fr: "19 juillet 2025 · Paris".into(),
-            cover_date_ar: String::new(),
+            cover_date_ar: "19 جويلية 2025 · باريس".into(),
         }
     }
 }

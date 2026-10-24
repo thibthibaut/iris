@@ -10,7 +10,13 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use iris_core::model::{Design, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Settings, Spread, SpreadKind};
+use iris_core::{
+    layout::{MARGIN, TITLE_BAND},
+    model::{Design, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Settings, Spread, SpreadKind},
+};
+
+/// Page numbers sit this far above the trim: inside the bottom margin, outside the safe zone.
+const FOLIO_FROM_BOTTOM: f64 = 8.0;
 
 /// Text shown on Spreads and on the opening, closing and cover pages.
 #[derive(Debug, Clone, Default)]
@@ -42,12 +48,12 @@ impl Texts {
             group_titles: settings
                 .groups
                 .iter()
-                .map(|g| (g.key.clone(), (get(&format!("group.{}.fr", g.key), &g.name), get(&format!("group.{}.ar", g.key), ""))))
+                .map(|g| (g.key.clone(), (get(&format!("group.{}.fr", g.key), &g.name), get(&format!("group.{}.ar", g.key), &g.title_ar))))
                 .collect(),
             opening: get("opening.fr", &format!("{}\n{}", settings.design.names, settings.design.cover_date_fr)),
-            opening_ar: get("opening.ar", ""),
+            opening_ar: get("opening.ar", "آمنة و تيبو"),
             closing: get("closing.fr", "Merci d'avoir été là."),
-            closing_ar: get("closing.ar", ""),
+            closing_ar: get("closing.ar", "يعيشكم اللي كنتو معانا"),
             cover_title: get("cover.title", &settings.design.names),
             cover_date: get("cover.date", &settings.design.cover_date_fr),
             cover_date_ar: get("cover.date_ar", &settings.design.cover_date_ar),
@@ -102,21 +108,11 @@ impl TypstRenderer {
 #let pink = {pink}
 #let blue = {blue}
 #let ink = {ink}
-#let stripes(x, y, w) = {{
-  place(dx: x, dy: y, rect(width: w, height: 1.1mm, fill: emerald))
-  place(dx: x, dy: y + 1.9mm, rect(width: w, height: 1.1mm, fill: red))
-  place(dx: x, dy: y + 3.8mm, rect(width: w, height: 1.1mm, fill: yellow))
+#let rule(x, y, w) = {{
+  place(dx: x, dy: y, line(length: w, stroke: 0.35pt + ink.transparentize(75%)))
+  place(dx: x, dy: y - 0.35mm, rect(width: 12mm, height: 0.7mm, fill: emerald))
 }}
-#let track(x, y, n) = place(dx: x, dy: y, box(width: 13mm, height: 7mm, {{
-  place(ellipse(width: 13mm, height: 7mm, stroke: 0.5pt + emerald))
-  place(dx: 1.2mm, dy: 0.9mm, ellipse(width: 10.6mm, height: 5.2mm, stroke: 0.3pt + red))
-  align(center + horizon, text(size: 7.5pt, fill: ink, font: "{title}")[#n])
-}}))
-#let dots(x, y) = {{
-  place(dx: x, dy: y, circle(radius: 1.1mm, fill: yellow))
-  place(dx: x + 4mm, dy: y, circle(radius: 1.1mm, fill: pink))
-  place(dx: x + 8mm, dy: y, circle(radius: 1.1mm, fill: blue))
-}}
+#let folio(x, y, n, side, on-photo) = place(dx: if side == left {{ x }} else {{ x - 40mm }}, dy: y, box(width: 40mm, align(side, text(font: "{title}", size: 8.5pt, tracking: 0.12em, fill: if on-photo {{ white }} else {{ ink.transparentize(25%) }})[#n])))
 #let photo(path, x, y, w, h, cx, cy, cw, ch) = place(dx: x, dy: y,
   box(width: w, height: h, clip: true, place(dx: -w * cx / cw, dy: -h * cy / ch,
     image(path, width: w / cw, height: h / ch, fit: "stretch"))))
@@ -134,27 +130,26 @@ impl TypstRenderer {
         )
     }
 
-    /// The French and Arabic titles at the same size, over the racing stripes.
+    /// The French and Arabic titles at the same size, side by side over a hairline.
     fn title_block(&self, x: f64, fr: &str, ar: &str) -> String {
         let d = &self.design;
+        let w = PAGE_W - 2.0 * MARGIN;
         let mut out = String::new();
         let _ = writeln!(
             out,
-            r#"#place(dx: {x}mm + 15mm, dy: 19mm, box(width: {w}mm, text(font: "{font}", size: 30pt, fill: ink, "{fr}")))"#,
-            w = PAGE_W - 30.0,
+            r#"#place(dx: {x}mm + {MARGIN}mm, dy: {MARGIN}mm, box(width: {w}mm, text(font: "{font}", size: 22pt, fill: ink, "{fr}")))"#,
             font = d.title_font,
             fr = escape(fr),
         );
         if !ar.trim().is_empty() {
             let _ = writeln!(
                 out,
-                r#"#place(dx: {x}mm + 15mm, dy: 17mm, box(width: {w}mm, align(right, text(font: "{font}", size: 30pt, dir: rtl, fill: ink, "{ar}"))))"#,
-                w = PAGE_W - 30.0,
+                r#"#place(dx: {x}mm + {MARGIN}mm, dy: {MARGIN}mm - 1.5mm, box(width: {w}mm, align(right, text(font: "{font}", size: 22pt, dir: rtl, fill: ink, "{ar}"))))"#,
                 font = d.arabic_font,
                 ar = escape(ar),
             );
         }
-        let _ = writeln!(out, "#stripes({x}mm + 15mm, 44mm, {w}mm)", w = PAGE_W - 30.0);
+        let _ = writeln!(out, "#rule({x}mm + {MARGIN}mm, {}mm, {w}mm)", MARGIN + TITLE_BAND - 5.0);
         out
     }
 
@@ -166,22 +161,22 @@ impl TypstRenderer {
                 _ => self.texts.chapter_titles.get(&spread.chapter).cloned().unwrap_or_default(),
             };
             out.push_str(&self.title_block(x0, &fr, &ar));
-            let _ = writeln!(out, "#dots({}mm, {}mm)", x0 + 2.0 * PAGE_W - 15.0 - 9.0, y0 + 10.0);
         }
         for placed in &spread.photos {
             out.push_str(&photo_call(placed, images, x0, y0));
         }
+        // Page numbers in the outer corners of the bottom margin, white over a full-bleed photo.
         let (left, right) = numbers;
-        if left > 0 {
-            let _ = writeln!(out, "#track({}mm, {}mm, {left})", x0 + 15.0, y0 + PAGE_H - 11.0);
-        }
-        if right > 0 {
-            let _ = writeln!(out, "#track({}mm, {}mm, {right})", x0 + 2.0 * PAGE_W - 28.0, y0 + PAGE_H - 11.0);
+        let y = PAGE_H - FOLIO_FROM_BOTTOM;
+        for (n, x, side) in [(left, MARGIN, "left"), (right, 2.0 * PAGE_W - MARGIN, "right")] {
+            if n > 0 {
+                let on_photo = spread.photos.iter().any(|p| p.rect.x <= x && x <= p.rect.x + p.rect.w && p.rect.y <= y && y <= p.rect.y + p.rect.h);
+                let _ = writeln!(out, "#folio({}mm, {}mm, {n}, {side}, {on_photo})", x0 + x, y0 + y);
+            }
         }
         out
     }
 
-    /// Compiles and returns Typst's warnings.
     fn compile(&self, source: &str, out: &Path, ppi: Option<u32>) -> Result<Vec<String>> {
         std::fs::create_dir_all(&self.work_dir)?;
         let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("render");
@@ -271,7 +266,6 @@ impl Renderer for TypstRenderer {
             date = escape(&texts.cover_date),
             date_ar = escape(&texts.cover_date_ar),
         );
-        let _ = writeln!(source, "#stripes({}mm, {}mm, {}mm)", b, b + PAGE_H - 12.0, PAGE_W);
         source.push_str("#pagebreak()\n");
 
         // Opening page.
@@ -286,7 +280,7 @@ impl Renderer for TypstRenderer {
             t = escape(&texts.opening.replace('\n', " · ")),
             ar = escape(&texts.opening_ar),
         );
-        let _ = writeln!(source, "#stripes({}mm, {}mm, {}mm)", b + 100.0, b + 140.0, PAGE_W - 200.0);
+        let _ = writeln!(source, "#place(dx: {}mm, dy: {}mm, rect(width: 12mm, height: 0.7mm, fill: emerald))", b + (PAGE_W - 12.0) / 2.0, b + 130.0);
         source.push_str("#pagebreak()\n");
 
         // Spreads, cut into single pages.
@@ -319,17 +313,14 @@ impl Renderer for TypstRenderer {
         );
         source.push_str("#pagebreak()\n");
 
-        // Cover back: the velodrome, drawn as a track with racing stripes.
+        // Cover back: the velodrome, as two fine concentric tracks.
         let _ = writeln!(
             source,
-            "#place(dx: {}mm, dy: {}mm, ellipse(width: 120mm, height: 64mm, stroke: 2pt + emerald))\n#place(dx: {}mm, dy: {}mm, ellipse(width: 108mm, height: 52mm, stroke: 1.2pt + red))\n#stripes({}mm, {}mm, {}mm)",
-            b + (PAGE_W - 120.0) / 2.0,
-            b + 60.0,
-            b + (PAGE_W - 108.0) / 2.0,
-            b + 66.0,
-            b,
-            b + PAGE_H - 12.0,
-            PAGE_W
+            "#place(dx: {}mm, dy: {}mm, ellipse(width: 96mm, height: 50mm, stroke: 0.8pt + emerald))\n#place(dx: {}mm, dy: {}mm, ellipse(width: 88mm, height: 42mm, stroke: 0.4pt + emerald.transparentize(40%)))",
+            b + (PAGE_W - 96.0) / 2.0,
+            b + 80.0,
+            b + (PAGE_W - 88.0) / 2.0,
+            b + 84.0,
         );
         self.compile(&source, out, None)
     }

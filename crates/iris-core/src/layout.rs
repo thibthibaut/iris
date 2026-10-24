@@ -7,10 +7,13 @@
 
 use crate::model::{Crop, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Rect};
 
-pub const MARGIN: f64 = 15.0;
-pub const GAP: f64 = 4.0;
-/// Height kept free at the top of a page that carries a Chapter title.
-pub const TITLE_BAND: f64 = 46.0;
+/// Top and side margins: twice the printer's 5 mm safe zone.
+pub const MARGIN: f64 = 10.0;
+/// A little more at the bottom, where the page number sits.
+pub const MARGIN_BOTTOM: f64 = 12.0;
+pub const GAP: f64 = 3.0;
+/// Height kept free under the top margin of a page that carries a Chapter title.
+pub const TITLE_BAND: f64 = 18.0;
 
 /// What layout needs to know about a Shot.
 #[derive(Debug, Clone, Default)]
@@ -30,7 +33,7 @@ pub struct LayoutShot {
 pub fn content_box(right_page: bool, title: bool) -> Rect {
     let x = if right_page { PAGE_W } else { 0.0 } + MARGIN;
     let top = MARGIN + if title { TITLE_BAND } else { 0.0 };
-    Rect { x, y: top, w: PAGE_W - 2.0 * MARGIN, h: PAGE_H - MARGIN - top }
+    Rect { x, y: top, w: PAGE_W - 2.0 * MARGIN, h: PAGE_H - MARGIN_BOTTOM - top }
 }
 
 /// Crop of a Photo with `photo_aspect` to fill a Slot of `slot_aspect`, keeping the faces
@@ -459,7 +462,7 @@ mod tests {
                 let r = a.rect;
                 let page_x = if r.x >= PAGE_W { PAGE_W } else { 0.0 };
                 assert!(r.x >= page_x + MARGIN - 1e-6 && r.x + r.w <= page_x + PAGE_W - MARGIN + 1e-6, "outside the page: {r:?}");
-                assert!(r.y >= MARGIN - 1e-6 && r.y + r.h <= PAGE_H - MARGIN + 1e-6, "outside the page: {r:?}");
+                assert!(r.y >= MARGIN - 1e-6 && r.y + r.h <= PAGE_H - MARGIN_BOTTOM + 1e-6, "outside the page: {r:?}");
                 for b in &spread.photos[i + 1..] {
                     let o = b.rect;
                     let overlap = r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h;

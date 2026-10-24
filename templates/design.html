@@ -24,7 +24,7 @@
     <input class="ar" dir="rtl" lang="ar" value="{{ row.ar }}" name="value" placeholder="بالعربي" hx-post="/api/text" hx-vals='{"key": "{{ row.key }}.ar"}' hx-trigger="change" hx-swap="none" oninput="preview(this)">
     <div class="title-preview">
       <span class="tp-fr">{{ row.fr }}</span><span class="tp-ar" dir="rtl">{{ row.ar }}</span>
-      <i class="tp-stripes"><b></b><b></b><b></b></i>
+      <i class="tp-rule"></i>
     </div>
   </div>
   {% endfor %}
