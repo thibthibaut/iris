@@ -402,3 +402,20 @@ iris album preflight <file.pdf> --printer P
 - Which display faces (Latin and Arabic) best fit the eighties-velodrome look.
 - Whether photographer `DateTimeOriginal` survived the export (Phase 0 inventory).
 - Deadline (Christmas gift?) → work back from Flexilivre's production and delivery time, plus one proof cycle.
+
+---
+
+## 13. As built (implementation notes)
+
+Where the implementation differs from the text above, this section wins.
+
+- **Workspace:** `crates/iris-core` is the pure core (no I/O, fast tests); the app is the root crate.
+- **One read per original:** the `ingest` stage reads each file once (hash, EXIF, JPEG quality estimate, 400/1200 px WebP proxies). Every later analysis uses the proxies, never the slow mount.
+- **Stages:** scan → ingest → quality → embed → faces → cluster → shots → chapters → select, plus optional `vlm_chapter_tiebreak`, `vlm_pick_review` and one `export:<edition>` per Edition. Staleness = version, a dependency ran since, or the settings/decisions the stage reads changed.
+- **Quality v2 and Rejected** are computed on the fly (`iris_core::quality`) from stored measurements, so the gate thresholds and the Couple apply at once. No eye-state model is bundled: closed eyes come only from the optional Mistral review.
+- **People:** clusters are raw; Persons are clusters with the People Overrides replayed. Every People Override names a face (its anchor), so names, roles, Groups and Quotas survive re-clustering.
+- **Layout:** instead of a fixed library of ~20 slot grids, a page Template is a justified arrangement (`rows:2-3`, `cols:1-2`, `hero`) computed from the photos' own aspect ratios: no crop except Heroes (face-aware). Spreads hold 3–9 Shots; a dynamic program cuts each Chapter into its Spread budget.
+- **Edits = Locks:** every layout edit stores the edited Spread as a `LockSpread` Override; the shown album is the generated Proposal with Locks applied, so edits show at once and survive rebuilds.
+- **Rendering:** the Typst CLI behind the `Renderer` trait (the plan's fallback). Previews are PNGs cached by a hash of what they show. Print: originals cropped by libvips at 300 ppi into a temp dir, single pages with 3 mm bleed, cover first and last, temp files deleted after.
+- **Exports:** `exports/<edition>/v<N>_<date>.pdf` + a manifest (pages, preflight problems, Spread ids); only the latest file per Edition is kept on disk.
+- **Not done yet:** `vlm_spread_review`; Saal and Blurb printer profiles (they fail with a clear message); drag-and-drop of a Spread across Chapters.
