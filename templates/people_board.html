@@ -10,9 +10,44 @@
   </div>
 </div>
 
-<h2>Families and friends</h2>
-<p class="small-print">Drag a person by their face onto a column. Someone can be in several.</p>
-<div class="group-board">
+<div class="people-layout">
+<div>
+<div class="toolbar sticky-tools">
+  <h2 class="inline">Everyone</h2>
+  <span class="spacer"></span>
+  <button class="ghost" onclick="mergeSelected()" title="Tick the boxes of the same person shown twice">Merge ticked people</button>
+</div>
+<div class="people-grid" data-person-list>
+  {% for p in persons %}
+  <div class="person{% if p.role.is_some() %} is-couple{% endif %}{% if p.below_quota() %} below-quota{% endif %}" data-anchor="{{ p.anchor }}">
+    <input type="checkbox" class="merge-box" value="{{ p.anchor }}" title="Tick to merge">
+    <a class="face-handle" href="/people/{{ p.anchor }}" title="Drag onto a family, or click to see all faces"><img src="/face/{{ p.anchor }}" loading="lazy" alt=""></a>
+    <input class="name" name="name" value="{{ p.name }}" placeholder="Name…" hx-post="/api/people/{{ p.anchor }}/name" hx-trigger="change" hx-swap="none">
+    <div class="person-meta">
+      <span>{{ p.photos }} photos</span>
+      {% if let Some(n) = p.in_album %}<span class="{% if p.below_quota() %}bad{% endif %}">{{ n }} in album</span>{% endif %}
+      {% if p.soft > 0 %}<a class="chip chip-warn" href="/people/{{ p.anchor }}">{{ p.soft }} to confirm</a>{% endif %}
+    </div>
+    <div class="person-controls">
+      <select name="role" hx-post="/api/people/{{ p.anchor }}/role" hx-target="#board" title="Role">
+        <option value="" {% if p.role.is_none() %}selected{% endif %}>Guest</option>
+        <option value="bride" {% if p.role_name() == "Bride" %}selected{% endif %}>Bride</option>
+        <option value="groom" {% if p.role_name() == "Groom" %}selected{% endif %}>Groom</option>
+      </select>
+      <label class="quota" title="Show at least this many times">Quota
+        <input type="number" min="0" max="50" name="quota" value="{{ p.quota }}" hx-post="/api/people/{{ p.anchor }}/quota" hx-trigger="change" hx-swap="none">
+      </label>
+    </div>
+    {% if !p.groups.is_empty() %}<div class="person-groups">{% for g in p.groups %}<span class="chip">{{ self.group_name(g) }}</span>{% endfor %}</div>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted">No people yet: run “Detect faces” and “Group faces” on the Index page.</p>
+  {% endfor %}
+</div>
+</div>
+<aside class="group-board">
+  <h2>Families and friends</h2>
+  <p class="small-print">Drag a person by their face onto a family. Someone can be in several.</p>
   {% for group in groups %}
   <div class="group-col">
     <h3>{{ group.name }}</h3>
@@ -29,37 +64,5 @@
     </div>
   </div>
   {% endfor %}
-</div>
-
-<div class="toolbar sticky-tools">
-  <h2 class="inline">Everyone</h2>
-  <span class="spacer"></span>
-  <button class="ghost" onclick="mergeSelected()" title="Tick the boxes of the same person shown twice">Merge ticked people</button>
-</div>
-<div class="people-grid" data-person-list>
-  {% for p in persons %}
-  <div class="person{% if p.role.is_some() %} is-couple{% endif %}{% if p.below_quota() %} below-quota{% endif %}" data-anchor="{{ p.anchor }}">
-    <input type="checkbox" class="merge-box" value="{{ p.anchor }}" title="Tick to merge">
-    <a class="face-handle" href="/people/{{ p.anchor }}" title="Drag onto a family, or click to see all faces"><img src="/face/{{ p.anchor }}" loading="lazy" alt=""></a>
-    <input class="name" name="name" value="{{ p.name }}" placeholder="Name…" hx-post="/api/people/{{ p.anchor }}/name" hx-trigger="change" hx-target="#board">
-    <div class="person-meta">
-      <span>{{ p.photos }} photos</span>
-      {% if let Some(n) = p.in_album %}<span class="{% if p.below_quota() %}bad{% endif %}">{{ n }} in album</span>{% endif %}
-      {% if p.soft > 0 %}<a class="chip chip-warn" href="/people/{{ p.anchor }}">{{ p.soft }} to confirm</a>{% endif %}
-    </div>
-    <div class="person-controls">
-      <select name="role" hx-post="/api/people/{{ p.anchor }}/role" hx-target="#board" title="Role">
-        <option value="" {% if p.role.is_none() %}selected{% endif %}>Guest</option>
-        <option value="bride" {% if p.role_name() == "Bride" %}selected{% endif %}>Bride</option>
-        <option value="groom" {% if p.role_name() == "Groom" %}selected{% endif %}>Groom</option>
-      </select>
-      <label class="quota" title="Show at least this many times">Quota
-        <input type="number" min="0" max="50" name="quota" value="{{ p.quota }}" hx-post="/api/people/{{ p.anchor }}/quota" hx-trigger="change" hx-target="#board">
-      </label>
-    </div>
-    {% if !p.groups.is_empty() %}<div class="person-groups">{% for g in p.groups %}<span class="chip">{{ g }}</span>{% endfor %}</div>{% endif %}
-  </div>
-  {% else %}
-  <p class="muted">No people yet: run “Detect faces” and “Group faces” on the Index page.</p>
-  {% endfor %}
+</aside>
 </div>

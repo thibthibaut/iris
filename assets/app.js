@@ -48,3 +48,23 @@ document.addEventListener("keydown", (event) => {
   // Pages register their own keys (Spread editor).
   if (!typing && window.pageKeys) window.pageKeys(event);
 });
+
+// Sticky toolbars sit right under the masthead, whatever its height (job bar shown or not).
+const masthead = document.getElementById("masthead");
+if (masthead) {
+  const setHeight = () => document.documentElement.style.setProperty("--masthead-h", masthead.offsetHeight + "px");
+  new ResizeObserver(setHeight).observe(masthead);
+  setHeight();
+}
+
+// Refreshing a region in place keeps the page where it was.
+let keptScroll = null;
+document.body.addEventListener("htmx:beforeSwap", (event) => {
+  if (event.detail.target && event.detail.target.dataset.keepScroll !== undefined) keptScroll = window.scrollY;
+});
+document.body.addEventListener("htmx:afterSettle", () => {
+  if (keptScroll !== null) {
+    window.scrollTo(0, keptScroll);
+    keptScroll = null;
+  }
+});

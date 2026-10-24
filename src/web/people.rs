@@ -100,6 +100,10 @@ struct Board {
 }
 
 impl Board {
+    fn group_name<'a>(&'a self, key: &'a str) -> &'a str {
+        self.groups.iter().find(|g| g.key == key).map_or(key, |g| g.name.as_str())
+    }
+
     fn members(&self, group: &str) -> Vec<&PersonCard> {
         self.persons.iter().filter(|p| p.groups.iter().any(|g| g == group)).collect()
     }

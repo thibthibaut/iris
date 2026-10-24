@@ -7,11 +7,12 @@
     <p class="lead">Name the people you care about, mark the bride and groom, and drag people into the families: each family gets its own Spread in its Edition. A Quota asks the album to show someone at least that many times.</p>
   </div>
 </section>
-<div id="board" hx-get="/api/people" hx-trigger="sse:changed[event.data=='cluster']">
+<div id="board" data-keep-scroll hx-get="/api/people" hx-trigger="sse:changed[event.data=='cluster']">
   {{ board|safe }}
 </div>
 <script>
-function initPeople(root) {
+function initPeople() {
+  const root = document;
   root.querySelectorAll("[data-person-list]").forEach((list) => {
     if (list._sortable) return;
     list._sortable = Sortable.create(list, {
@@ -26,6 +27,7 @@ function initPeople(root) {
       onAdd: (event) => {
         const anchor = event.item.dataset.anchor;
         event.item.remove();
+        if (!anchor) return;
         htmx.ajax("POST", `/api/people/${anchor}/group`, { target: "#board", values: { group: zone.dataset.group, member: "true" } });
       },
     });
@@ -36,6 +38,7 @@ function mergeSelected() {
   if (ids.length < 2) { toast("Tick at least two people to merge"); return; }
   htmx.ajax("POST", `/api/people/${ids[0]}/merge`, { target: "#board", values: { ids: ids.join(",") } });
 }
-htmx.onLoad((element) => initPeople(element));
+// After every swap: the new lists need their drag and drop.
+htmx.onLoad(() => initPeople());
 </script>
 {% endblock %}

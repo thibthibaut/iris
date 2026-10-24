@@ -11,6 +11,7 @@
   <script src="/assets/app.js" defer></script>
 </head>
 <body hx-ext="sse" sse-connect="/api/events">
+  <div class="masthead" id="masthead">
   <header class="top">
     <a class="brand" href="/"><span class="brand-mark">◯</span> Emna &amp; Thibaut <small>album</small></a>
     <nav class="steps">
@@ -31,6 +32,7 @@
   </header>
   <div class="stripes"><i></i><i></i><i></i></div>
   <div id="jobbar" sse-swap="job"></div>
+  </div>
   <aside id="history" class="history" hidden hx-get="/api/history" hx-trigger="sse:changed, open"></aside>
   <main>
     {% block content %}{% endblock %}
