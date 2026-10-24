@@ -8,11 +8,11 @@ use std::{
 
 use anyhow::Result;
 use iris_core::{
-    album::AlbumInput,
+    album::{AlbumInput, conflicts, spread_conflicts},
     decisions::Eligibility,
     edit::apply_locks,
     layout::LayoutShot,
-    model::{EditionDef, PAGE_W, PhotoId, Proposal, Spread},
+    model::{Conflict, EditionDef, PAGE_W, PhotoId, Proposal, Spread},
     select::{Candidate, GroupPick},
 };
 
@@ -173,8 +173,25 @@ pub fn edition<'a>(state: &'a AlbumState, key: &str) -> Option<&'a EditionDef> {
 }
 
 /// What could go wrong in print: low resolution, cut faces, faces in the safe zone.
+/// Pinned Photos the album has no room for: (Photo, file name).
+pub fn unplaced_pins(state: &AlbumState, album: &Proposal) -> Vec<(PhotoId, String)> {
+    conflicts(album, &state.decisions)
+        .into_iter()
+        .filter_map(|conflict| match conflict {
+            Conflict::PinNotPlaced { photo } => Some((photo, state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone()))),
+            Conflict::BannedOnLockedSpread { .. } => None,
+        })
+        .collect()
+}
+
 pub fn warnings(state: &AlbumState, spread: &Spread) -> Vec<String> {
     let mut out = Vec::new();
+    for conflict in spread_conflicts(spread, &state.decisions) {
+        if let Conflict::BannedOnLockedSpread { photo, .. } = conflict {
+            let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
+            out.push(format!("{name}: Banned, but this Spread is Locked — remove it here or unlock the Spread"));
+        }
+    }
     for placed in &spread.photos {
         let Some(photo) = state.photo(placed.photo) else { continue };
         if let Some(review) = state.reviews.get(&photo.id) {
@@ -188,7 +205,8 @@ pub fn warnings(state: &AlbumState, spread: &Spread) -> Vec<String> {
         }
         let (Some(width), Some(height)) = (photo.width, photo.height) else { continue };
         let ppi = (width as f64 * placed.crop.w) / (placed.rect.w / 25.4);
-        if ppi < 250.0 {
+        // Slots are sized to exactly 250 ppi; allow for rounding.
+        if ppi < 249.5 {
             out.push(format!("{}: {:.0} ppi (needs 250)", photo.file_name, ppi));
         }
         let _ = height;

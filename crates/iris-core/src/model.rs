@@ -412,8 +412,21 @@ pub struct Proposal {
     /// Per Slot alternatives for the candidate tray: photo → ranked alternatives.
     #[serde(default)]
     pub alternatives: BTreeMap<PhotoId, Vec<PhotoId>>,
+    /// Persons whose Quota was not reached: (Person, Quota, Shots placed).
     #[serde(default)]
-    pub notes: Vec<String>,
+    pub unmet_quotas: Vec<(i64, u32, u32)>,
+    /// Share of the selected Shots showing the Couple.
+    #[serde(default)]
+    pub couple_share: f64,
+}
+
+/// An Override that cannot apply to the album as it stands, shown on its Spread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Conflict {
+    /// A Banned Photo still printed because its Spread is Locked.
+    BannedOnLockedSpread { photo: PhotoId, spread: u64 },
+    /// A Pinned Photo with no room: its Chapter is all Locked, or the layout could not fit it.
+    PinNotPlaced { photo: PhotoId },
 }
 
 pub const PAGE_W: f64 = 297.0;

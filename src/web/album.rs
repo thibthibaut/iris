@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, render, toast};
 use crate::{
-    album::{current, layout_shots, page_numbers, preview, warnings},
+    album::{current, layout_shots, page_numbers, preview, unplaced_pins, warnings},
     db::Database,
     jobs::stage_status,
     state::AlbumState,
@@ -59,6 +59,8 @@ struct AlbumPage {
     couple_share: Option<f64>,
     couple_target: f64,
     unmet: Vec<(String, u32, u32)>,
+    /// Pinned Photos with no room in the album.
+    pins: Vec<(PhotoId, String)>,
     stale: Option<String>,
     building: bool,
 }
@@ -82,6 +84,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
     let mut sections = Vec::new();
     let mut couple_share = None;
     let mut unmet = Vec::new();
+    let mut pins = Vec::new();
     let mut pages = 0;
     if let Some(album) = &album {
         let spreads = edition_spreads(album, &edition);
@@ -112,18 +115,12 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
                     .collect(),
             });
         }
-        for note in &album.notes {
-            if let Some(share) = note.strip_prefix("couple_share:") {
-                couple_share = share.parse().ok();
-            } else if let Some(rest) = note.strip_prefix("quota:") {
-                let parts: Vec<&str> = rest.split(':').collect();
-                if let [person, quota, reached] = parts[..] {
-                    let anchor: i64 = person.parse().unwrap_or(0);
-                    let name = snapshot.people.by_anchor(anchor).and_then(|p| p.name.clone()).unwrap_or_else(|| format!("Person {anchor}"));
-                    unmet.push((name, quota.parse().unwrap_or(0), reached.parse().unwrap_or(0)));
-                }
-            }
+        couple_share = Some(album.couple_share);
+        for &(anchor, quota, reached) in &album.unmet_quotas {
+            let name = snapshot.people.by_anchor(anchor).and_then(|p| p.name.clone()).unwrap_or_else(|| format!("Person {anchor}"));
+            unmet.push((name, quota, reached));
         }
+        pins = unplaced_pins(&snapshot, album);
     }
     let target = if edition.group.is_some() {
         let groups = album.as_ref().map_or(0, |a| a.spreads.iter().filter(|s| s.kind == SpreadKind::Group).count());
@@ -140,6 +137,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
         couple_share,
         couple_target: settings.couple_share,
         unmet,
+        pins,
         stale: status.stale_reason,
         building: state.jobs().is_busy("select"),
         edition,

@@ -4,16 +4,17 @@ use anyhow::{Context, Result};
 use iris_core::{
     album::edition_spreads,
     decisions::Decisions,
-    layout::face_crop,
+    layout::{bleed_crop, face_crop},
     model::{Crop, PAGE_H, PAGE_W, PhotoId, Rect},
 };
 use libvips::{VipsImage, ops};
 
 use crate::{
-    album::{current, layout_shots, renderer, warnings},
+    album::{current, layout_shots, renderer, unplaced_pins, warnings},
     image_io::vips_error,
     jobs::{CancelToken, ProgressSink, Stage, StageCtx},
-    render::{ImageMap, PrintJob, Renderer},
+    preflight::{self, Problem},
+    render::{ImageMap, PrintJob, Renderer, Texts},
     state::AlbumState,
 };
 
@@ -100,7 +101,8 @@ impl Stage for Export {
                     let rect = with_bleed(placed.rect, bleed);
                     let photo = state.photo(placed.photo).context("photo missing")?;
                     let out = temp.join(format!("{}-{}.jpg", spread.uid, placed.photo));
-                    crop_original(Path::new(&photo.path), placed.crop, rect, &out)
+                    let crop = bleed_crop(placed.crop, placed.rect, rect);
+                    crop_original(Path::new(&photo.path), crop, rect, &out)
                         .with_context(|| format!("failed to crop {}", photo.file_name))?;
                     images.insert(placed.photo, out);
                     placed.rect = rect;
@@ -133,28 +135,48 @@ impl Stage for Export {
             let date = chrono::Local::now().format("%Y-%m-%d");
             let pdf = dir.join(format!("v{version}_{date}.pdf"));
             let job = PrintJob { spreads: print_spreads.iter().collect(), images, cover_photo: cover_path, bleed_mm: bleed };
-            renderer(&ctx.config, &state).render_print(&job, &pdf)?;
+            let typst_warnings = renderer(&ctx.config, &state).render_print(&job, &pdf)?;
 
-            // Preflight.
-            let interior = 2 + 2 * spreads.len();
-            let mut problems: Vec<String> = spreads.iter().flat_map(|s| warnings(&state, s)).collect();
-            if interior % 2 != 0 {
-                problems.push(format!("{interior} interior pages: Flexilivre may need an even count"));
+            // Preflight: the PDF as written, then each Spread's warnings (ppi, faces, conflicts).
+            let page_mm = (PAGE_W + 2.0 * bleed, PAGE_H + 2.0 * bleed);
+            let facts = preflight::inspect(&pdf)?;
+            let interior = facts.pages.saturating_sub(2);
+            let mut problems = preflight::check(&facts, page_mm);
+            problems.extend(typst_warnings.into_iter().map(|w| Problem::album(format!("renderer: {w}"))));
+            // Titles always come in French and Tunisian Arabic.
+            let texts = Texts::from(settings, &state.decisions.texts);
+            for spread in spreads.iter().filter(|s| s.title) {
+                let (fr, ar) = match &spread.group {
+                    Some(group) => texts.group_titles.get(group),
+                    None => texts.chapter_titles.get(&spread.chapter),
+                }
+                .cloned()
+                .unwrap_or_default();
+                for (text, language) in [(fr, "French"), (ar, "Tunisian Arabic")] {
+                    if text.trim().is_empty() {
+                        let message = format!("title in {language} missing (Text & design)");
+                        problems.push(Problem { spread: Some(spread.uid), message });
+                    }
+                }
             }
-            if !(24..=400).contains(&interior) {
-                problems.push(format!("{interior} interior pages: Flexilivre accepts 24 to 400"));
+            for spread in &spreads {
+                problems.extend(warnings(&state, spread).into_iter().map(|message| Problem { spread: Some(spread.uid), message }));
             }
+            problems.extend(
+                unplaced_pins(&state, &album).into_iter().map(|(_, name)| Problem::album(format!("{name}: Pinned but not in the album"))),
+            );
             let manifest = serde_json::json!({
                 "edition": self.edition,
                 "printer": settings.printer,
                 "bleed_mm": bleed,
                 "interior_pages": interior,
-                "pdf_pages": interior + 2,
-                "page_size_mm": [PAGE_W + 2.0 * bleed, PAGE_H + 2.0 * bleed],
+                "pdf_pages": facts.pages,
+                "page_size_mm": [page_mm.0, page_mm.1],
                 "spreads": spreads.iter().map(|s| s.uid.to_string()).collect::<Vec<_>>(),
                 "photos": spreads.iter().map(|s| s.photos.len()).sum::<usize>(),
                 "problems": problems,
-                "fonts_embedded": true,
+                "fonts": facts.fonts,
+                "fonts_embedded": facts.fonts_not_embedded.is_empty(),
                 "overrides_revision": ctx.db.overrides_revision()?,
             });
             ctx.db.add_export(self.edition, version, &pdf.to_string_lossy(), &manifest)?;

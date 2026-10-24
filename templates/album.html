@@ -32,6 +32,9 @@
   {% if !unmet.is_empty() %}
   <p class="note">Quotas not met: {% for (name, quota, reached) in unmet %}<b>{{ name }}</b> {{ reached }}/{{ quota }}{% if !loop.last %} · {% endif %}{% endfor %}. Pin photos of them, or lower the Quota.</p>
   {% endif %}
+  {% if !pins.is_empty() %}
+  <p class="note note-bad">Pinned but not in the album: {% for (id, name) in pins %}<a href="/photos/{{ id }}">{{ name }}</a>{% if !loop.last %} · {% endif %}{% endfor %}. Their Chapter is all Locked, or the layout had no room: unlock a Spread there, or add the photo in the Spread editor.</p>
+  {% endif %}
   {% for section in sections %}
   <section class="chapter-section">
     <header>

@@ -14,7 +14,7 @@ use iris_core::{
 use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, pipeline::ago, render, toast};
-use crate::{album::current, render::Texts};
+use crate::{album::current, preflight::Problem, render::Texts};
 
 pub struct TextRow {
     pub key: String,
@@ -113,7 +113,7 @@ pub struct ExportVersion {
     pub exists: bool,
     pub size: String,
     pub pages: i64,
-    pub problems: Vec<String>,
+    pub problems: Vec<Problem>,
     pub changed: Option<usize>,
 }
 
@@ -157,7 +157,13 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
                             exists: metadata.is_some(),
                             size: metadata.map(|m| super::pipeline::human_bytes(m.len())).unwrap_or_default(),
                             pages: manifest["interior_pages"].as_i64().unwrap_or(0),
-                            problems: manifest["problems"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                            problems: manifest["problems"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                // Older manifests stored bare strings.
+                                .filter_map(|v| serde_json::from_value(v.clone()).ok().or_else(|| v.as_str().map(Problem::album)))
+                                .collect(),
                             changed: Some(changed),
                         }
                     })

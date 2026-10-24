@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     decisions::Decisions,
-    layout::{LayoutShot, layout_chapter, layout_spread},
-    model::{EditionDef, PhotoId, Proposal, Spread, SpreadKind},
+    layout::{LayoutShot, MIN_PER_SPREAD, layout_chapter, layout_spread},
+    model::{Conflict, EditionDef, PhotoId, Proposal, Spread, SpreadKind},
     select::{Candidate, GroupPick, SelectInput, select},
 };
 
@@ -28,6 +28,26 @@ pub fn photo_spreads(page_target: u32) -> usize {
 }
 
 pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
+    // A Group whose Spread cannot be laid out (too few photos) gives its Spread back to the
+    // Chapters, so `ours` stays on its page target.
+    let mut skipped: HashSet<String> = HashSet::new();
+    loop {
+        let proposal = build_skipping(input, decisions, &skipped);
+        let missing: Vec<String> = input
+            .groups
+            .iter()
+            .filter(|g| !g.members.is_empty() && !skipped.contains(&g.key))
+            .filter(|g| !proposal.spreads.iter().any(|s| s.group.as_ref() == Some(&g.key)))
+            .map(|g| g.key.clone())
+            .collect();
+        if missing.is_empty() {
+            return proposal;
+        }
+        skipped.extend(missing);
+    }
+}
+
+fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<String>) -> Proposal {
     let settings = &decisions.settings;
     let chapters = &settings.chapters;
     let locked: Vec<&Spread> = decisions.locked.values().collect();
@@ -36,7 +56,7 @@ pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
     let groups: Vec<GroupPick> = input
         .groups
         .iter()
-        .filter(|g| !g.members.is_empty() && !locked_groups.contains(g.key.as_str()))
+        .filter(|g| !g.members.is_empty() && !locked_groups.contains(g.key.as_str()) && !skipped.contains(&g.key))
         .cloned()
         .collect();
     let group_count = groups.len() + locked_groups.len();
@@ -148,7 +168,9 @@ pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
         if settings.group_spread_chapter == chapter.key {
             for (key, photos) in &selection.groups {
                 let shots: Vec<LayoutShot> = photos.iter().filter_map(shot).collect();
-                if let Some(layout) = layout_spread(&shots, true) {
+                if shots.len() >= MIN_PER_SPREAD
+                    && let Some(layout) = layout_spread(&shots, true)
+                {
                     chapter_spreads.push(Spread {
                         uid: 0,
                         chapter: chapter.key.clone(),
@@ -173,12 +195,35 @@ pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
         spreads.extend(chapter_spreads);
     }
 
-    let mut notes = Vec::new();
-    for (person, quota, reached) in &selection.unmet_quotas {
-        notes.push(format!("quota:{person}:{quota}:{reached}"));
+    Proposal {
+        spreads,
+        alternatives: selection.alternatives,
+        unmet_quotas: selection.unmet_quotas.clone(),
+        couple_share: selection.couple_share,
     }
-    notes.push(format!("couple_share:{:.3}", selection.couple_share));
-    Proposal { spreads, alternatives: selection.alternatives, notes }
+}
+
+/// Overrides the album as shown cannot honour (Ban > Pin > Rejected).
+pub fn conflicts(album: &Proposal, decisions: &Decisions) -> Vec<Conflict> {
+    let mut found: Vec<Conflict> = album.spreads.iter().flat_map(|s| spread_conflicts(s, decisions)).collect();
+    let placed: HashSet<PhotoId> = album.spreads.iter().flat_map(|s| s.photos.iter().map(|p| p.photo)).collect();
+    let mut pins: Vec<PhotoId> = decisions.pins.iter().copied().filter(|p| !placed.contains(p) && !decisions.bans.contains(p)).collect();
+    pins.sort_unstable();
+    found.extend(pins.into_iter().map(|photo| Conflict::PinNotPlaced { photo }));
+    found
+}
+
+/// The conflicts shown on one Spread.
+pub fn spread_conflicts(spread: &Spread, decisions: &Decisions) -> Vec<Conflict> {
+    if !spread.locked {
+        return Vec::new();
+    }
+    spread
+        .photos
+        .iter()
+        .filter(|p| decisions.bans.contains(&p.photo))
+        .map(|p| Conflict::BannedOnLockedSpread { photo: p.photo, spread: spread.uid })
+        .collect()
 }
 
 /// A stable identity from what the Spread shows.
@@ -275,5 +320,48 @@ mod tests {
         let dad_groups: Vec<_> = edition_spreads(&again, dad).iter().filter_map(group_of).collect();
         assert_eq!(dad_groups, vec!["groom_dad_family".to_string()]);
         assert_eq!(edition_pages(&again, ours) - edition_pages(&again, dad), 2);
+    }
+
+    #[test]
+    fn a_group_too_small_for_its_own_spread_does_not_cost_a_core_spread() {
+        let mut input = input();
+        // One photo of the Bride's friends: not enough for a Spread.
+        input.candidates[49].persons = vec![300];
+        input.groups.push(GroupPick { key: "friends".into(), members: HashSet::from([300]), size: 4 });
+
+        let album = build(&input, &decisions(&[]));
+
+        assert!(!album.spreads.iter().any(|s| s.group.as_deref() == Some("friends")));
+        assert_eq!(album.spreads.len(), photo_spreads(16));
+    }
+
+    #[test]
+    fn overrides_that_cannot_apply_are_reported_on_their_spread() {
+        let first = build(&input(), &decisions(&[]));
+        let locked = first.spreads[0].clone();
+        let banned = locked.photos[0].photo;
+        // Every Spread of the first Chapter Locked: no room left for a new Pin there.
+        let locks: Vec<Override> = first
+            .spreads
+            .iter()
+            .filter(|s| s.chapter == locked.chapter)
+            .map(|s| Override::LockSpread { spread: s.clone() })
+            .collect();
+        let placed: HashSet<PhotoId> = first.spreads.iter().flat_map(|s| s.photos.iter().map(|p| p.photo)).collect();
+        let pinned = (1..=30).find(|p| !placed.contains(p)).unwrap();
+        let mut overrides = locks;
+        overrides.push(Override::Ban { photo: banned, on: true });
+        overrides.push(Override::Pin { photo: pinned, on: true });
+        let decisions = decisions(&overrides);
+        let mut input = input();
+        input.candidates.iter_mut().filter(|c| c.photo == pinned).for_each(|c| c.pinned = true);
+        input.candidates.iter_mut().filter(|c| c.photo == banned).for_each(|c| c.eligible = false);
+
+        let album = build(&input, &decisions);
+        let found = conflicts(&album, &decisions);
+
+        assert!(found.contains(&Conflict::BannedOnLockedSpread { photo: banned, spread: locked.uid }), "{found:?}");
+        assert!(found.contains(&Conflict::PinNotPlaced { photo: pinned }), "{found:?}");
+        assert_eq!(found.len(), 2, "{found:?}");
     }
 }

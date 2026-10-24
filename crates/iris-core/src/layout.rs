@@ -82,6 +82,30 @@ fn parse_template(template: &str) -> Option<(&str, Vec<usize>)> {
 }
 
 /// Lays out one page. `template` is `hero`, `rows:a-b-…` or `cols:a-b-…`.
+/// The Crop for a Slot grown from `slot` to `bled` (print bleed): the same scale, showing
+/// more of the photo. Where the photo has no more to show, it zooms in slightly rather than
+/// stretching.
+pub fn bleed_crop(crop: Crop, slot: Rect, bled: Rect) -> Crop {
+    let (sx, sy) = (crop.w / slot.w, crop.h / slot.h);
+    let mut out = Crop {
+        x: crop.x - (slot.x - bled.x) * sx,
+        y: crop.y - (slot.y - bled.y) * sy,
+        w: bled.w * sx,
+        h: bled.h * sy,
+    };
+    let zoom = (1.0 / out.w).min(1.0 / out.h).min(1.0);
+    if zoom < 1.0 {
+        let (cx, cy) = (out.x + out.w / 2.0, out.y + out.h / 2.0);
+        out.w *= zoom;
+        out.h *= zoom;
+        out.x = cx - out.w / 2.0;
+        out.y = cy - out.h / 2.0;
+    }
+    out.x = out.x.clamp(0.0, 1.0 - out.w);
+    out.y = out.y.clamp(0.0, 1.0 - out.h);
+    out
+}
+
 pub fn layout_page(shots: &[LayoutShot], template: &str, right_page: bool, title: bool) -> Option<Vec<PlacedPhoto>> {
     let (kind, sizes) = parse_template(template)?;
     if sizes.iter().sum::<usize>() != shots.len() || sizes.contains(&0) {
@@ -234,6 +258,8 @@ pub struct SpreadLayout {
 }
 
 const MAX_PER_PAGE: usize = 6;
+/// Fewer Shots than this do not make a Spread (density 3–9).
+pub const MIN_PER_SPREAD: usize = 3;
 
 /// Best layout of these Shots (in order) on one Spread.
 pub fn layout_spread(shots: &[LayoutShot], title: bool) -> Option<SpreadLayout> {
@@ -315,7 +341,7 @@ pub fn layout_chapter(shots: &[LayoutShot], spreads: usize, title: bool, target_
         return Vec::new();
     }
     let spreads = spreads.min(n);
-    let lo = if n >= 3 * spreads { 3 } else { 1 };
+    let lo = if n >= MIN_PER_SPREAD * spreads { MIN_PER_SPREAD } else { 1 };
     let hi = if n <= 9 * spreads { 9 } else { 2 * MAX_PER_PAGE };
     let mut memo = PageMemo::default();
     let mut segment_cost = std::collections::HashMap::new();
@@ -389,6 +415,25 @@ mod tests {
 
         let small = spread.photos.iter().find(|p| p.photo == 2).unwrap();
         assert!(small.rect.w.max(small.rect.h) <= 90.0 + 1e-6, "blown up beyond 250 ppi: {:?}", small.rect);
+    }
+
+    #[test]
+    fn a_slot_grown_into_the_bleed_shows_more_of_the_photo_without_stretching() {
+        let slot = Rect { x: 0.0, y: 20.0, w: 100.0, h: 50.0 };
+        let bled = Rect { x: -3.0, y: 20.0, w: 103.0, h: 50.0 };
+        let crop = Crop { x: 0.2, y: 0.1, w: 0.6, h: 0.8 };
+        let pixel_aspect = |c: Crop, r: Rect| (c.w / c.h) / r.aspect();
+
+        let grown = bleed_crop(crop, slot, bled);
+        assert!((pixel_aspect(grown, bled) - pixel_aspect(crop, slot)).abs() < 1e-9, "stretched: {grown:?}");
+        assert!((grown.w / bled.w - crop.w / slot.w).abs() < 1e-9, "zoomed although there was room: {grown:?}");
+        assert!(grown.x < crop.x);
+
+        // No room left of the crop: it zooms in a little instead of stretching.
+        let edge = Crop { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+        let grown = bleed_crop(edge, slot, bled);
+        assert!((pixel_aspect(grown, bled) - pixel_aspect(edge, slot)).abs() < 1e-9, "stretched: {grown:?}");
+        assert!(grown.x >= 0.0 && grown.y >= 0.0 && grown.x + grown.w <= 1.0 + 1e-9 && grown.y + grown.h <= 1.0 + 1e-9);
     }
 
     #[test]

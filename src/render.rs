@@ -63,7 +63,8 @@ pub trait Renderer: Send + Sync {
     fn render_preview(&self, spread: &Spread, images: &ImageMap, page_numbers: (usize, usize), out: &Path) -> Result<()>;
     /// The print PDF: cover front, opening page, every Spread as two pages, closing page,
     /// cover back. Images must already be cropped to their Slots.
-    fn render_print(&self, job: &PrintJob, out: &Path) -> Result<()>;
+    /// Returns the renderer's warnings (an unknown font falls back silently otherwise).
+    fn render_print(&self, job: &PrintJob, out: &Path) -> Result<Vec<String>>;
 }
 
 pub struct PrintJob<'a> {
@@ -180,7 +181,8 @@ impl TypstRenderer {
         out
     }
 
-    fn compile(&self, source: &str, out: &Path, ppi: Option<u32>) -> Result<()> {
+    /// Compiles and returns Typst's warnings.
+    fn compile(&self, source: &str, out: &Path, ppi: Option<u32>) -> Result<Vec<String>> {
         std::fs::create_dir_all(&self.work_dir)?;
         let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("render");
         let typ = self.work_dir.join(format!("{stem}.typ"));
@@ -191,8 +193,9 @@ impl TypstRenderer {
             command.arg("--ppi").arg(ppi.to_string());
         }
         let output = command.arg(&typ).arg(out).output().context("failed to run typst (is it installed?)")?;
-        anyhow::ensure!(output.status.success(), "typst failed: {}", String::from_utf8_lossy(&output.stderr));
-        Ok(())
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::ensure!(output.status.success(), "typst failed: {stderr}");
+        Ok(stderr.lines().filter_map(|line| line.strip_prefix("warning: ")).map(str::to_string).collect())
     }
 }
 
@@ -241,10 +244,10 @@ impl Renderer for TypstRenderer {
         // The fold, so the two pages read as a book.
         let _ = writeln!(source, "#place(dx: {}mm, dy: 0mm, line(length: {}mm, angle: 90deg, stroke: 0.4pt + luma(215)))", PAGE_W, PAGE_H);
         source.push_str(&self.spread_body(spread, images, 0.0, 0.0, page_numbers));
-        self.compile(&source, out, Some(72))
+        self.compile(&source, out, Some(72)).map(drop)
     }
 
-    fn render_print(&self, job: &PrintJob, out: &Path) -> Result<()> {
+    fn render_print(&self, job: &PrintJob, out: &Path) -> Result<Vec<String>> {
         let b = job.bleed_mm;
         let (w, h) = (PAGE_W + 2.0 * b, PAGE_H + 2.0 * b);
         let mut source = self.preamble(w, h);
@@ -289,16 +292,17 @@ impl Renderer for TypstRenderer {
         // Spreads, cut into single pages.
         let mut page = 2;
         for spread in &job.spreads {
+            // Both halves carry the Spread's own (left, right) numbers; each shows its side's.
+            let numbers = (page, page + 1);
             for side in 0..2 {
                 // Shift the Spread so this page sits inside the trim box.
                 let x0 = b - side as f64 * PAGE_W;
                 let mut body = String::new();
-                let numbers = (page, page + 1);
                 body.push_str(&self.spread_body(spread, &job.images, x0, b, numbers));
                 let _ = writeln!(source, "#box(width: {w}mm, height: {h}mm, clip: true)[\n{body}]");
                 source.push_str("#pagebreak()\n");
-                page += 1;
             }
+            page += 2;
         }
 
         // Closing page.

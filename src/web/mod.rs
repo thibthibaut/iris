@@ -213,7 +213,7 @@ async fn asset(axum::extract::Path(path): axum::extract::Path<String>) -> Respon
         Some(file) => {
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
             // Our own CSS/JS change with every build: always revalidate them.
-            let cache = if path.starts_with("vendor/") || path.starts_with("fonts/") { "public, max-age=86400" } else { "no-cache" };
+            let cache = if path.starts_with("vendor/") || path.contains("fonts/") { "public, max-age=86400" } else { "no-cache" };
             (
                 [(header::CONTENT_TYPE, mime.to_string()), (header::CACHE_CONTROL, cache.to_string())],
                 file.data.into_owned(),

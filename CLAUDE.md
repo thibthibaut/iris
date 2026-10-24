@@ -49,22 +49,18 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - Settings Overrides use dotted paths; a number indexes a list (`chapters.3.starts_at`).
 - `htmx.onLoad` gets the swapped child, not its container: re-init drag-and-drop on `document`.
 - Ingest failures are retried only by an explicit Re-run (failed ≠ pending).
+- Typst warns on variable fonts and silently falls back on unknown ones: print fonts in `assets/fonts/` are static instances; the variable originals for the web UI live in `assets/web-fonts/` (Typst scans font dirs recursively). Export preflight surfaces Typst warnings.
+- `render_print` gives both halves of a Spread the same (left, right) numbers.
 
 ### Code review of `17650dc...HEAD` — to fix next, in this order
-**Print correctness (Spec):**
-1. `render.rs` `render_print`: right-hand pages print the next page's number (each side passes `(page, page+1)` after `page` is incremented).
-2. `stages/export.rs`: bleed grows edge Slots but keeps the old Crop, so `crop_original` stretches non-uniformly (~0.8 %). Grow the Crop with the Slot.
-3. Bans don't reach Locked Spreads (`build`, `apply_locks`): a Banned photo still prints. At least warn on the Spread; better, list it as a conflict.
-4. A Pin can vanish when all of a Chapter's Spreads are Locked or the layout is infeasible (`generated[c] == 0`, `layout_chapter` returns `[]`). Report it as a conflict.
-5. `album.rs` `group_count` reserves a Spread for every Group with members even when its Group Spread can't be built → `ours` under target.
-6. Preflight is partly fake: `fonts_embedded: true` hard-coded; page size incl. bleed not checked; parity check can't fail (`2+2n`); text in the safe zone not checked. Add the golden PDF test from PLAN §9.4.
+**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
-**Missing (Spec):** conflicts (§2.4: an Override that can't apply shows on its Spread); preflight errors linking to their Spread; Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
+**Missing (Spec):** Conflicts beyond Ban/Pin (e.g. a MoveChapter or People Override that no longer resolves); Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
 
 **Standards:**
 - CLAUDE.md rule 1: no GUI for Chapter weights/prompts/titles, Groups, Editions, wedding date, `design.body_font`; `Export::all(&["ours", …])` and `HERO_CHAPTERS` hard-code setting keys.
 - CONTEXT.md vocabulary: "Family"/"families" in UI text (use Group), `ChapterSection`/`sections` (use Chapter), `duplicates`/`.dup-group` (use Shot/copies), `SpreadLayout` (borderline).
-- Smells: string keys for Chapter/Group/Edition/Template; bare `i64` Persons; Proposal notes as encoded strings (`"quota:{p}:{q}:{r}"`) → typed fields; `exports()` 6-tuple → struct; `Spread { … }` literal duplicated in `album.rs`; "face is Couple" check duplicated in `state.rs` and `album.rs`; `jobs::hash` → `fingerprint`.
+- Smells: string keys for Chapter/Group/Edition/Template; bare `i64` Persons; `exports()` 6-tuple → struct; `Spread { … }` literal duplicated in `album.rs`; "face is Couple" check duplicated in `state.rs` and `album.rs`; `jobs::hash` → `fingerprint`.
 - Possible bugs: `Source::parse` maps unknown values to Guest; Export staleness ignores texts/design/Bans; `couple_anchors()` recomputed per Photo in `AlbumState::load`.
 
 **Then:** update PLAN.md §13 ("As built") to match, and continue QA with the user (People → Chapter times → Chapters → rebuild → Spread editor → export a proof).

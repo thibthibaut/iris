@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod image_io;
 mod jobs;
+mod preflight;
 mod render;
 mod stages;
 mod state;

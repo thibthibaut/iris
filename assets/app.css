@@ -1,7 +1,7 @@
 /* Iris album UI — the invitation's palette, eighties-style accents, calm content areas. */
 @font-face { font-family: "Righteous"; src: url("/assets/fonts/Righteous-Regular.ttf"); font-display: swap; }
 @font-face { font-family: "Lalezar"; src: url("/assets/fonts/Lalezar-Regular.ttf"); font-display: swap; }
-@font-face { font-family: "Playfair Display"; src: url("/assets/fonts/PlayfairDisplay[wght].ttf"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Playfair Display"; src: url("/assets/web-fonts/PlayfairDisplay[wght].ttf"); font-weight: 400 900; font-display: swap; }
 
 :root {
   --paper: #fbf8f3;
@@ -93,6 +93,7 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .ok-badge { color: #1f6b56; font-weight: 600; }
 .error-box { background: var(--red-soft); color: #7d2a16; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; font-size: 13px; }
 .note { padding: 8px 12px; border-radius: 8px; background: #f6f2ea; }
+.note-bad { background: #fbe9e4; border-left: 3px solid var(--bad, #c0392b); }
 
 /* Live job bar */
 .jobbar {

@@ -99,6 +99,10 @@ _Avoid_: Filtered, failed, banned (Banned is the user's decision)
 **Lock**:
 A Spread frozen exactly as it is, so regeneration leaves it alone. You can lock a Spread yourself, and any manual layout change (swap, Crop, Template) locks it automatically.
 
+**Conflict**:
+An Override the album cannot honour as it stands, shown where it bites instead of being dropped: a Banned Photo on a Locked Spread, a Pinned Photo with no room left in its Chapter.
+_Avoid_: Error, invalid override
+
 **Proposal**:
 The album the generator produces from the Photos and Overrides. Everything that isn't Locked is disposable and can be regenerated.
 _Avoid_: Draft, auto-layout
