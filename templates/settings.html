@@ -38,6 +38,12 @@
     {% call num("face_soft_distance", "Attach leftover faces closer than", s.face_soft_distance, "L2 distance; they are flagged to confirm.") %}
     {% call num("face_min_height_frac", "Ignore faces smaller than (share of photo height)", s.face_min_height_frac, "") %}
   </fieldset>
+  <fieldset><legend>Chapter start times</legend>
+    <p class="small-print">When each moment started on the day (Paris time). They split the photographer's folders that span several Chapters, and place guest photos sent during the day.</p>
+    {% for c in s.chapters %}
+    <label>{{ c.title_fr }}<input type="time" name="value" value="{% if let Some(t) = c.starts_at %}{{ t }}{% endif %}" hx-post="/api/settings" hx-vals='{"key": "chapters.{{ loop.index0 }}.starts_at", "kind": "text"}' hx-trigger="change" hx-swap="none"></label>
+    {% endfor %}
+  </fieldset>
   <fieldset><legend>Photographer folders → Chapters</legend>
     {% for (folder, keys) in folders %}
     <label>{{ folder }}<input name="value" value="{{ keys }}" hx-post="/api/settings" hx-vals='{"key": "folder_chapters.{{ folder }}", "kind": "list"}' hx-trigger="change" hx-swap="none"></label>

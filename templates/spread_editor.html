@@ -19,6 +19,7 @@
         {% for slot in slots %}
         <div class="slot" data-photo="{{ slot.photo }}" data-drag="slot:{{ slot.photo }}" draggable="true" onclick="selectSlot(this)" title="{{ slot.name }}"
              style="left: {{ slot.left }}%; top: {{ slot.top }}%; width: {{ slot.width }}%; height: {{ slot.height }}%">
+          <span class="slot-ppi {% if slot.ppi < 250 %}ppi-bad{% else if slot.ppi < 300 %}ppi-ok{% endif %}" title="Print resolution in this Slot">{{ slot.ppi }} ppi</span>
           {% if slot.pinned %}<span class="slot-badge">📌</span>{% endif %}{% if slot.hero %}<span class="slot-badge">★</span>{% endif %}
         </div>
         {% endfor %}

@@ -184,6 +184,8 @@ pub struct Slot {
     pub name: String,
     pub pinned: bool,
     pub hero: bool,
+    /// Effective print resolution in this Slot.
+    pub ppi: u32,
 }
 
 #[derive(Template)]
@@ -265,6 +267,10 @@ fn editor(state: &AppState, db: &Database, snapshot: &AlbumState, uid: u64, edit
                 height: placed.rect.h / 210.0 * 100.0,
                 crop: placed.crop,
                 name: snapshot.photo(placed.photo).map(|p| p.file_name.clone()).unwrap_or_default(),
+                ppi: snapshot
+                    .photo(placed.photo)
+                    .and_then(|p| p.width)
+                    .map_or(0, |w| ((w as f64 * placed.crop.w) / (placed.rect.w / 25.4)) as u32),
                 pinned: snapshot.decisions.pins.contains(&placed.photo),
                 hero: snapshot.decisions.heroes.contains(&placed.photo),
             })
@@ -418,7 +424,14 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
             _ => anyhow::bail!("unknown action {}", form.op),
         };
         let snapshot = state.snapshot(&db)?;
-        Ok((editor(&state, &db, &snapshot, uid, &form.edition)?, label))
+        let editor = editor(&state, &db, &snapshot, uid, &form.edition)?;
+        // Say so when a photo is too small for its Slot.
+        let low: Vec<String> = editor
+            .as_ref()
+            .map(|e| e.slots.iter().filter(|s| s.ppi > 0 && s.ppi < 250).map(|s| format!("{} at {} ppi", s.name, s.ppi)).collect())
+            .unwrap_or_default();
+        let label = if low.is_empty() { label } else { format!("{label} — too small to print sharply: {}", low.join(", ")) };
+        Ok((editor, label))
     })
     .await?;
     let _ = edition;

@@ -35,7 +35,7 @@ impl Stage for Chapters {
     }
 
     fn version(&self) -> i64 {
-        1
+        2
     }
 
     fn deps(&self) -> &'static [&'static str] {
@@ -87,7 +87,16 @@ impl Stage for Chapters {
         // (chapter index, probability, margin, source, order)
         let mut assigned: HashMap<i64, (usize, f64, f64, &'static str, f64)> = HashMap::new();
 
-        // 1. Photographer folders.
+        let wedding_day = settings.wedding_date.clone();
+        let starts: Vec<Option<i64>> = chapters
+            .iter()
+            .map(|c| {
+                let time = c.starts_at.as_ref()?;
+                let local = chrono::NaiveDateTime::parse_from_str(&format!("{wedding_day} {time}"), "%Y-%m-%d %H:%M").ok()?;
+                iris_core::capture::paris_to_utc_ms(local)
+            })
+            .collect();
+        // 1. Photographer folders: content, plus the Chapters' start times when known.
         let mut by_folder: HashMap<&str, Vec<&PhotoRecord>> = HashMap::new();
         for photo in photos.iter().filter(|p| p.source == Some(Source::Photographer)) {
             by_folder.entry(photo.source_folder.as_str()).or_default().push(photo);
@@ -108,7 +117,20 @@ impl Stage for Chapters {
                         let probs = zero_shot(p.id);
                         let sub: Vec<f64> = indices.iter().map(|&c| probs[c]).collect();
                         let total: f64 = sub.iter().sum::<f64>().max(1e-9);
-                        sub.into_iter().map(|v| v / total).collect()
+                        indices
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &c)| {
+                                let in_window = match (p.taken_at_utc, starts[c]) {
+                                    (Some(t), Some(start)) => {
+                                        let next = indices.get(k + 1).and_then(|&n| starts[n]).unwrap_or(i64::MAX);
+                                        t >= start && t < next
+                                    }
+                                    _ => false,
+                                };
+                                sub[k] / total + if in_window { 0.6 } else { 0.0 }
+                            })
+                            .collect()
                     })
                     .collect();
                 split_contiguous(&scores)
@@ -133,15 +155,9 @@ impl Stage for Chapters {
             .collect();
 
         // 3. Guests (and photographer Photos from unmapped folders).
-        let wedding_day = settings.wedding_date.clone();
-        let starts: Vec<Option<i64>> = chapters
-            .iter()
-            .map(|c| {
-                let time = c.starts_at.as_ref()?;
-                let local = chrono::NaiveDateTime::parse_from_str(&format!("{wedding_day} {time}"), "%Y-%m-%d %H:%M").ok()?;
-                iris_core::capture::paris_to_utc_ms(local)
-            })
-            .collect();
+        let people = crate::state::AlbumState::load(&ctx.db)?;
+        let groom = people.people.with_role(iris_core::model::Role::Groom).map(|p| p.anchor);
+        let bride = people.people.with_role(iris_core::model::Role::Bride).map(|p| p.anchor);
         let mut low_confidence = 0;
         let unplaced: Vec<&PhotoRecord> = photos.iter().filter(|p| !assigned.contains_key(&p.id)).collect();
         for photo in unplaced {
@@ -170,6 +186,25 @@ impl Stage for Chapters {
             if let Some(index) = crate::stages::vlm::chapter(&ctx.db, photo).and_then(|key| settings.chapter_index(&key)) {
                 let order = neighbours.iter().find(|(c, _, _)| *c == index).map_or(1e6, |(_, s, o)| o + 0.5 - s * 0.1);
                 assigned.insert(photo.id, (index, 0.9, 0.5, "mistral", order));
+                sink.inc(1);
+                continue;
+            }
+            let referenced: Vec<bool> = (0..chapters.len()).map(|c| references.iter().any(|r| r.1 == c)).collect();
+            // The groom without the bride, before the town hall: his preparation.
+            if let (Some(groom_prep), Some(bride_prep)) = (settings.chapter_index("prep_groom"), settings.chapter_index("prep_bride")) {
+                let persons = people.persons_in(photo.id);
+                let before_mairie = photo.sent_at_utc.zip(settings.chapter_index("mairie_before").and_then(|c| starts[c])).is_some_and(|(sent, start)| sent < start);
+                let looks_like_prep = evidence.neighbours.iter().take(3).any(|(c, _)| *c == bride_prep || *c == groom_prep);
+                if groom.is_some_and(|g| persons.contains(&g)) && !bride.is_some_and(|b| persons.contains(&b)) && (before_mairie || looks_like_prep) {
+                    assigned.insert(photo.id, (groom_prep, 0.8, 0.5, "groom without bride", 0.0));
+                    sink.inc(1);
+                    continue;
+                }
+            }
+            // A Chapter nobody photographed can only win on its description.
+            let best_described = (0..chapters.len()).max_by(|&a, &b| evidence.zero_shot[a].total_cmp(&evidence.zero_shot[b]));
+            if let Some(c) = best_described.filter(|&c| !referenced[c] && evidence.zero_shot[c] >= 0.35 && evidence.latest_possible.is_none_or(|l| c <= l)) {
+                assigned.insert(photo.id, (c, evidence.zero_shot[c], 0.1, "description", 0.0));
                 sink.inc(1);
                 continue;
             }

@@ -22,7 +22,8 @@ impl Config {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Self = toml::from_str(&raw).context("failed to parse TOML config")?;
-        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        // Absolute paths: Typst and other tools resolve relative ones from elsewhere.
+        let base = std::env::current_dir()?.join(path.parent().unwrap_or_else(|| Path::new(".")));
         for path in [
             &mut config.database_path,
             &mut config.photographer_root,
@@ -30,7 +31,7 @@ impl Config {
             &mut config.cache_dir,
             &mut config.exports_dir,
         ] {
-            *path = absolutize(base, path);
+            *path = normalize(&absolutize(&base, path));
         }
         Ok(config)
     }
@@ -46,6 +47,21 @@ impl Config {
     pub fn temp_dir(&self) -> PathBuf {
         self.cache_dir.join("tmp")
     }
+}
+
+/// Resolves `..` and `.` without touching the disk (the mounts may be slow or absent).
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn absolutize(base: &Path, path: &Path) -> PathBuf {

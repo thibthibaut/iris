@@ -128,12 +128,24 @@ pub fn layout_page(shots: &[LayoutShot], template: &str, right_page: bool, title
             } else {
                 Rect { x: area.x + along_depth, y: area.y + along_span, w: line_depth, h: length }
             };
-            placed.push(PlacedPhoto { photo: shot.photo, rect, crop: Crop::FULL });
+            placed.push(PlacedPhoto { photo: shot.photo, rect: fit_resolution(rect, shot.max_print_mm), crop: Crop::FULL });
             along_span += length + GAP;
         }
         along_depth += line_depth + GAP;
     }
     Some(placed)
+}
+
+/// Never print a Photo beyond 250 ppi: a Slot bigger than that shrinks around its center,
+/// leaving white space, so low-resolution Shots end up small.
+fn fit_resolution(rect: Rect, max_print_mm: f64) -> Rect {
+    let longest = rect.w.max(rect.h);
+    if max_print_mm <= 0.0 || longest <= max_print_mm {
+        return rect;
+    }
+    let scale = max_print_mm / longest;
+    let (w, h) = (rect.w * scale, rect.h * scale);
+    Rect { x: rect.x + (rect.w - w) / 2.0, y: rect.y + (rect.h - h) / 2.0, w, h }
 }
 
 /// How good a laid-out page is: lower is better.
@@ -142,7 +154,9 @@ fn page_cost(shots: &[LayoutShot], placed: &[PlacedPhoto], template: &str, right
         // Heroes are chosen, not discovered: only landscape Photos fill a page well.
         let shot = &shots[0];
         let loss = 1.0 - (shot.aspect.min(PAGE_W / PAGE_H) / shot.aspect.max(PAGE_W / PAGE_H));
-        return if shot.hero { loss } else { 10.0 };
+        // A Hero fills the page: only Photos sharp enough for that (crop included).
+        let printable = shot.max_print_mm * shot.aspect.min(PAGE_W / PAGE_H) / shot.aspect.max(PAGE_W / PAGE_H);
+        return if shot.hero && printable >= PAGE_W { loss } else { 10.0 };
     }
     let area = content_box(right_page, title);
     let areas: Vec<f64> = placed.iter().map(|p| p.rect.w * p.rect.h).collect();
@@ -361,6 +375,20 @@ mod tests {
         assert!(crop.x <= face[0] && crop.x + crop.w >= face[2], "face cut horizontally: {crop:?}");
         assert!(crop.y <= face[1] - 0.3 * (face[3] - face[1]) + 1e-9, "no headroom: {crop:?}");
         assert!(crop.x > 0.0, "should move toward the face");
+    }
+
+    #[test]
+    fn low_resolution_shots_get_slots_they_can_fill_at_250_ppi() {
+        // A WhatsApp photo printable up to 90 mm, among two photographer photos.
+        let shots: Vec<LayoutShot> = [(1, 500.0), (2, 90.0), (3, 500.0)]
+            .into_iter()
+            .map(|(photo, max_print_mm)| LayoutShot { photo, aspect: 1.5, quality: 0.5, max_print_mm, ..LayoutShot::default() })
+            .collect();
+
+        let spread = layout_spread(&shots, false).unwrap();
+
+        let small = spread.photos.iter().find(|p| p.photo == 2).unwrap();
+        assert!(small.rect.w.max(small.rect.h) <= 90.0 + 1e-6, "blown up beyond 250 ppi: {:?}", small.rect);
     }
 
     #[test]

@@ -104,16 +104,29 @@ fn toggle(set: &mut HashSet<PhotoId>, photo: PhotoId, on: bool) {
     }
 }
 
-/// Sets `a.b.c` inside a JSON object, creating objects on the way.
+/// Sets `a.b.c` inside a JSON value, creating objects on the way; a number indexes a list.
 fn set_path(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
     let mut node = root;
     let mut parts = key.split('.').peekable();
     while let Some(part) = parts.next() {
+        let last = parts.peek().is_none();
+        if node.is_array()
+            && let Ok(index) = part.parse::<usize>()
+        {
+            // An index past the end is ignored rather than growing the list.
+            let Some(item) = node.as_array_mut().and_then(|list| list.get_mut(index)) else { return };
+            if last {
+                *item = value;
+                return;
+            }
+            node = item;
+            continue;
+        }
         if !node.is_object() {
             *node = serde_json::Value::Object(Default::default());
         }
         let map = node.as_object_mut().expect("just made an object");
-        if parts.peek().is_none() {
+        if last {
             map.insert(part.to_string(), value);
             return;
         }
@@ -155,10 +168,16 @@ mod tests {
                 key: "page_target".into(),
                 value: serde_json::json!(40),
             },
+            Override::SetSetting {
+                key: "chapters.2.starts_at".into(),
+                value: serde_json::json!("14:05"),
+            },
         ]);
 
         assert_eq!(decisions.settings.gate.guest_min_quality, 0.4);
         assert_eq!(decisions.settings.page_target, 40);
         assert_eq!(decisions.settings.max_heroes, 3);
+        assert_eq!(decisions.settings.chapters[2].starts_at.as_deref(), Some("14:05"));
+        assert_eq!(decisions.settings.chapters.len(), Settings::default().chapters.len());
     }
 }

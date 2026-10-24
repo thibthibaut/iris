@@ -342,3 +342,7 @@ h2.inline { margin: 0; }
 .versions { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 10px; }
 .versions li { border-top: 1px solid var(--line); padding-top: 8px; }
 @media (max-width: 760px) { .text-row { grid-template-columns: 1fr; } }
+
+.slot-ppi { position: absolute; left: 3px; bottom: 3px; font-size: 10px; background: rgba(255,255,255,.85); border-radius: 999px; padding: 0 5px; opacity: 0; transition: opacity .1s; }
+.slot:hover .slot-ppi, .slot.selected .slot-ppi, .slot-ppi.ppi-bad { opacity: 1; }
+.slot-ppi.ppi-bad { background: var(--red); color: #fff; }
