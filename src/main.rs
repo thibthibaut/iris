@@ -1,4 +1,5 @@
 mod app;
+mod capture;
 mod cli;
 mod config;
 mod db;
