@@ -1,7 +1,6 @@
 use std::time::Instant;
 
-use anyhow::{Context, Result};
-use libvips::VipsApp;
+use anyhow::Result;
 use rayon::prelude::*;
 use tracing::{info, warn};
 
@@ -15,16 +14,15 @@ impl BatchProcessor for WebpCacheProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.heic_photos(ctx.limit)?;
+        let photos = ctx.db.heic_photos(ctx.pending_limit)?;
         let pb = progress::bar(photos.len(), "webp cache");
         let cache_dir = cache::cache_dir(&ctx.config.database_path);
-        let vips = VipsApp::default("iris-webp-cache").context("failed to initialize libvips")?;
 
         let outcomes = photos
             .par_iter()
             .map(|(photo_id, path)| {
                 let start = Instant::now();
-                let outcome = match cache::ensure_heic_webp(&vips, &cache_dir, path) {
+                let outcome = match cache::ensure_heic_webp(&cache_dir, path) {
                     Ok(result) => {
                         info!(
                             photo_id,

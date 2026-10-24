@@ -1,10 +1,17 @@
 use std::{
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use libvips::{VipsApp, VipsImage, ops};
+
+static VIPS: OnceLock<VipsApp> = OnceLock::new();
+
+pub fn vips() -> &'static VipsApp {
+    VIPS.get_or_init(|| VipsApp::default("iris").expect("failed to initialize libvips"))
+}
 
 const HEIC_WEBP_QUALITY: i32 = 82;
 
@@ -23,10 +30,10 @@ pub fn cache_dir(db_path: &Path) -> PathBuf {
 }
 
 pub fn ensure_heic_webp(
-    _vips: &VipsApp,
     cache_dir: &Path,
     source_path: &str,
 ) -> Result<CachedWebp> {
+    let _ = vips();
     let metadata = std::fs::metadata(source_path)
         .with_context(|| format!("failed to stat HEIC photo {source_path}"))?;
     let cache_path = cache_path(&metadata, cache_dir, source_path)?;

@@ -1,6 +1,6 @@
 mod schema;
 
-use std::{cell::RefCell, collections::HashMap, path::Path};
+use std::{sync::Mutex, collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -98,7 +98,7 @@ pub struct PersonFace {
 }
 
 pub struct Database {
-    conn: RefCell<Connection>,
+    conn: Mutex<Connection>,
 }
 
 impl Database {
@@ -110,22 +110,22 @@ impl Database {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         schema::initialize(&conn)?;
         Ok(Self {
-            conn: RefCell::new(conn),
+            conn: Mutex::new(conn),
         })
     }
 
     pub fn begin_scan(&self) -> Result<i64> {
         let now = chrono::Utc::now().timestamp();
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "INSERT INTO scan_runs(started_at_unix) VALUES (?)",
             params![now],
         )?;
-        Ok(self.conn.borrow().last_insert_rowid())
+        Ok(self.conn.lock().unwrap().last_insert_rowid())
     }
 
     pub fn finish_scan(&self, scan_id: i64) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE scan_runs SET finished_at_unix = ? WHERE id = ?",
             params![now, scan_id],
         )?;
@@ -134,7 +134,7 @@ impl Database {
 
     pub fn photo_file_state(&self, path: &str) -> Result<Option<(i64, i64, i64)>> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 "SELECT id, file_size, modified_at_unix FROM photos WHERE path = ?",
                 params![path],
@@ -145,7 +145,7 @@ impl Database {
     }
 
     pub fn upsert_photo(&self, input: &NewPhoto, scan_id: i64) -> Result<i64> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 INSERT INTO photos(path, blake3_hash, file_size, modified_at_unix, missing, last_seen_scan_id, last_scanned_at_unix)
 VALUES (?, ?, ?, ?, 0, ?, strftime('%s','now'))
@@ -193,7 +193,7 @@ ON CONFLICT(path) DO UPDATE SET
     }
 
     pub fn mark_seen_unchanged(&self, photo_id: i64, scan_id: i64) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE photos
 SET missing = 0, last_seen_scan_id = ?, last_scanned_at_unix = strftime('%s','now')
@@ -205,7 +205,7 @@ WHERE id = ?
     }
 
     pub fn mark_missing_not_seen(&self, scan_id: i64) -> Result<usize> {
-        let changed = self.conn.borrow().execute(
+        let changed = self.conn.lock().unwrap().execute(
             "UPDATE photos SET missing = 1 WHERE last_seen_scan_id IS NULL OR last_seen_scan_id <> ?",
             params![scan_id],
         )?;
@@ -222,6 +222,13 @@ WHERE id = ?
     pub fn photos_missing_quality(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
         self.query_photos(
             "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 AND quality_score IS NULL ORDER BY id",
+            limit,
+        )
+    }
+
+    pub fn photos_for_verify(&self, limit: Option<usize>) -> Result<Vec<Photo>> {
+        self.query_photos(
+            "SELECT id, blake3_hash, path, width, height FROM photos WHERE missing = 0 ORDER BY id",
             limit,
         )
     }
@@ -248,7 +255,7 @@ WHERE id = ?
     }
 
     pub fn photos_missing_geo(&self, limit: Option<usize>) -> Result<Vec<GeoCandidate>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let sql = with_optional_limit(
             r#"
 SELECT id, gps_lat, gps_lon
@@ -278,7 +285,7 @@ ORDER BY id
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<(Photo, String)>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let sql = with_optional_limit(
             r#"
 SELECT id, blake3_hash, path, width, height, ocr_cleaned_text
@@ -310,7 +317,7 @@ ORDER BY id
     }
 
     pub fn save_metadata(&self, photo_id: i64, metadata: &PhotoMetadata) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE photos SET
   taken_at = ?, gps_lat = ?, gps_lon = ?, camera_model = ?, orientation = ?, width = ?, height = ?
@@ -331,7 +338,7 @@ WHERE id = ?
     }
 
     pub fn save_geo_location(&self, photo_id: i64, location: &GeoLocation) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE photos SET
   geo_city = ?, geo_region = ?, geo_country = ?, geo_country_code = ?, geo_label = ?
@@ -350,7 +357,7 @@ WHERE id = ?
     }
 
     pub fn save_quality(&self, photo_id: i64, quality: &ImageQuality) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE photos SET
   blur_score = ?, exposure_score = ?, screenshot_score = ?, quality_score = ?
@@ -368,7 +375,7 @@ WHERE id = ?
     }
 
     pub fn save_ocr_result(&self, photo_id: i64, result: &OcrResult) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE photos SET ocr_status = 'done', ocr_raw_text = ?, ocr_cleaned_text = ?, ocr_confidence = ?
 WHERE id = ?
@@ -384,7 +391,7 @@ WHERE id = ?
     }
 
     pub fn mark_ocr_skipped(&self, photo_id: i64) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE photos SET ocr_status = 'skipped' WHERE id = ?",
             params![photo_id],
         )?;
@@ -392,7 +399,7 @@ WHERE id = ?
     }
 
     pub fn mark_ocr_failed(&self, photo_id: i64) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE photos SET ocr_status = 'failed' WHERE id = ?",
             params![photo_id],
         )?;
@@ -418,7 +425,7 @@ WHERE id = ?
     }
 
     pub fn replace_faces(&self, photo_id: i64, faces: &[FaceDetection]) -> Result<()> {
-        let mut conn = self.conn.borrow_mut();
+        let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
         delete_faces_for_photo_tx(&tx, photo_id)?;
@@ -469,7 +476,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     }
 
     pub fn mark_faces_failed(&self, photo_id: i64) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE photos SET face_status = 'failed' WHERE id = ?",
             params![photo_id],
         )?;
@@ -477,7 +484,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     }
 
     pub fn face_embeddings_for_clustering(&self) -> Result<Vec<FaceEmbeddingRow>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
 SELECT faces.id, vec_face_embeddings.embedding
@@ -506,7 +513,7 @@ ORDER BY faces.id
 
     pub fn start_face_cluster_run(&self, params: &FaceClusterRunParams) -> Result<i64> {
         let now = chrono::Utc::now().timestamp();
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 INSERT INTO face_cluster_runs(
   started_at_unix, status, algorithm, min_cluster_size, min_samples, match_threshold
@@ -520,11 +527,11 @@ VALUES (?, 'running', 'hdbscan', ?, ?, ?)
                 0.0_f64,
             ],
         )?;
-        Ok(self.conn.borrow().last_insert_rowid())
+        Ok(self.conn.lock().unwrap().last_insert_rowid())
     }
 
     pub fn clear_face_clusters(&self) -> Result<()> {
-        let mut conn = self.conn.borrow_mut();
+        let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM face_person_assignments", [])?;
         tx.execute("DELETE FROM persons", [])?;
@@ -540,7 +547,7 @@ VALUES (?, 'running', 'hdbscan', ?, ?, ?)
         noise_faces: usize,
     ) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE face_cluster_runs
 SET finished_at_unix = ?, status = ?, input_faces = ?, clustered_faces = 0,
@@ -560,7 +567,7 @@ WHERE id = ?
 
     pub fn fail_face_cluster_run(&self, run_id: i64, error: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             r#"
 UPDATE face_cluster_runs
 SET finished_at_unix = ?, status = 'failed', error = ?
@@ -578,8 +585,13 @@ WHERE id = ?
         noise_faces: usize,
         clusters: &[FaceClusterInput],
     ) -> Result<FaceClusterSaveSummary> {
-        anyhow::ensure!(!clusters.is_empty(), "clusters must not be empty");
-        let mut conn = self.conn.borrow_mut();
+        if clusters.is_empty() {
+            return Ok(FaceClusterSaveSummary {
+                created_persons: 0,
+                assigned_faces: 0,
+            });
+        }
+        let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let now = chrono::Utc::now().timestamp();
         let mut created_persons = 0;
@@ -664,7 +676,7 @@ WHERE id = ?
 
     pub fn stats(&self) -> Result<(i64, i64)> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 "SELECT COUNT(*), SUM(CASE WHEN missing THEN 1 ELSE 0 END) FROM photos",
                 [],
@@ -675,7 +687,7 @@ WHERE id = ?
 
     pub fn indexed_photo_count(&self) -> Result<i64> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row("SELECT COUNT(*) FROM photos WHERE missing = 0", [], |row| {
                 row.get(0)
             })
@@ -684,7 +696,7 @@ WHERE id = ?
 
     pub fn photo_path(&self, photo_id: i64) -> Result<Option<String>> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 "SELECT path FROM photos WHERE id = ? AND missing = 0",
                 params![photo_id],
@@ -696,7 +708,7 @@ WHERE id = ?
 
     pub fn photo_detail(&self, photo_id: i64) -> Result<Option<SearchResult>> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 r#"
 SELECT id, path, taken_at, camera_model, geo_label, quality_score, width, height
@@ -723,7 +735,7 @@ WHERE id = ? AND missing = 0
     }
 
     pub fn people(&self) -> Result<Vec<PersonSummary>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
 SELECT
@@ -776,7 +788,7 @@ ORDER BY persons.face_count DESC, persons.id
 
     pub fn person_detail(&self, person_id: i64) -> Result<Option<PersonDetail>> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 r#"
 SELECT id, display_name, face_count
@@ -797,7 +809,7 @@ WHERE id = ? AND active = 1
     }
 
     pub fn person_faces(&self, person_id: i64) -> Result<Vec<PersonFace>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
 SELECT
@@ -836,7 +848,7 @@ ORDER BY face_person_assignments.distance_to_centroid ASC, faces.id
 
     pub fn update_person_name(&self, person_id: i64, display_name: Option<&str>) -> Result<bool> {
         let now = chrono::Utc::now().timestamp();
-        let changed = self.conn.borrow().execute(
+        let changed = self.conn.lock().unwrap().execute(
             r#"
 UPDATE persons
 SET display_name = ?, updated_at_unix = ?
@@ -848,13 +860,13 @@ WHERE id = ? AND active = 1
     }
 
     pub fn heic_photos(&self, limit: Option<usize>) -> Result<Vec<(i64, String)>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let sql = with_optional_limit(
             r#"
 SELECT id, path
 FROM photos
 WHERE missing = 0
-  AND lower(path) LIKE '%.heic'
+  AND path LIKE '%.heic'
 ORDER BY id
 "#,
             limit,
@@ -908,7 +920,7 @@ ORDER BY id
     }
 
     pub fn photo_rows(&self, limit: usize) -> Result<Vec<PhotoRow>> {
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
 SELECT
@@ -954,7 +966,7 @@ LIMIT ?
 
     fn photo_id_by_path(&self, path: &str) -> Result<i64> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 "SELECT id FROM photos WHERE path = ?",
                 params![path],
@@ -965,7 +977,7 @@ LIMIT ?
 
     fn query_photos(&self, sql: &str, limit: Option<usize>) -> Result<Vec<Photo>> {
         let sql = with_optional_limit(sql, limit)?;
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql.sql)?;
         let rows = stmt.query_map(sql.params(), |row| {
             Ok(Photo {
@@ -995,7 +1007,7 @@ LIMIT ?
         );
         let bytes = bytemuck::cast_slice(embedding);
         let sql = format!("INSERT OR REPLACE INTO {table}(rowid, embedding) VALUES (?, ?)");
-        self.conn.borrow().execute(&sql, params![rowid, bytes])?;
+        self.conn.lock().unwrap().execute(&sql, params![rowid, bytes])?;
         Ok(())
     }
 
@@ -1009,7 +1021,7 @@ LIMIT ?
     ) -> Result<()> {
         let bytes = bytemuck::cast_slice(query_embedding);
         let sql = format!("SELECT rowid, distance FROM {table} WHERE embedding MATCH ? AND k = ?");
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(
             params![bytes, i64::try_from(limit).context("limit is too large")?],
@@ -1032,7 +1044,7 @@ LIMIT ?
         scores: &mut HashMap<i64, f64>,
     ) -> Result<()> {
         let pattern = format!("%{}%", escape_like(query));
-        let conn = self.conn.borrow();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
 SELECT id
@@ -1078,7 +1090,7 @@ LIMIT ?
 
     fn search_result(&self, photo_id: i64, score: f64) -> Result<SearchResult> {
         self.conn
-            .borrow()
+            .lock().unwrap()
             .query_row(
                 r#"
 SELECT id, path, taken_at, camera_model, geo_label, quality_score, width, height
@@ -1104,11 +1116,11 @@ WHERE id = ? AND missing = 0
     }
 
     fn delete_embeddings(&self, photo_id: i64) -> Result<()> {
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "DELETE FROM vec_image_embeddings WHERE rowid = ?",
             params![photo_id],
         )?;
-        self.conn.borrow().execute(
+        self.conn.lock().unwrap().execute(
             "DELETE FROM vec_ocr_text_embeddings WHERE rowid = ?",
             params![photo_id],
         )?;
@@ -1116,7 +1128,7 @@ WHERE id = ? AND missing = 0
     }
 
     fn delete_faces_for_photo(&self, photo_id: i64) -> Result<()> {
-        let mut conn = self.conn.borrow_mut();
+        let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         delete_faces_for_photo_tx(&tx, photo_id)?;
         tx.commit()?;
@@ -1186,14 +1198,14 @@ fn register_sqlite_vec() {
         *const rusqlite::ffi::sqlite3_api_routines,
     ) -> std::os::raw::c_int;
 
-    unsafe {
+    static REGISTERED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    REGISTERED.get_or_init(|| unsafe {
+        let f: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
+            unsafe extern "C" fn(),
             SqliteExtensionEntry,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    }
+        >(f)));
+    });
 }
 
 struct OptionalLimitSql {

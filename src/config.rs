@@ -36,8 +36,8 @@ impl Config {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Self = toml::from_str(&raw).context("failed to parse TOML config")?;
-        let cwd = std::env::current_dir().context("failed to read current directory")?;
-        config.normalize(&cwd);
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        config.normalize(base);
         config.validate()?;
         Ok(config)
     }

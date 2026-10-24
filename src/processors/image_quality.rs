@@ -17,7 +17,7 @@ impl BatchProcessor for QualityProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_missing_quality(ctx.limit)?;
+        let photos = ctx.db.photos_missing_quality(ctx.pending_limit)?;
         let pb = progress::bar(photos.len(), "quality");
         let mut done = 0;
         let mut failed = 0;

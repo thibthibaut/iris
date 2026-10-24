@@ -1,7 +1,7 @@
 use std::{
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -9,12 +9,11 @@ use axum::{
     Form, Router,
     body::Body,
     extract::{Path, Query, Request, State},
-    http::{StatusCode, Uri, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use libvips::VipsApp;
 use open_clip_inference::TextEmbedder;
 use serde::Deserialize;
 use tracing::{error, info, warn};
@@ -31,10 +30,9 @@ const FACE_CROP_PADDING: f64 = 1.8;
 
 #[derive(Clone)]
 struct WebState {
-    db_path: PathBuf,
+    db: Arc<Database>,
     webp_cache_dir: PathBuf,
     text_embedder: Arc<Mutex<TextEmbedder>>,
-    vips: Arc<VipsApp>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +56,8 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         "starting web server"
     );
 
+    let db = Arc::new(Database::open(&config.database_path)?);
+
     let model_start = Instant::now();
     info!("initializing query text embedder");
     let text_embedder = TextEmbedder::from_hf(MOBILE_CLIP_MODEL_ID)
@@ -69,20 +69,10 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         "query text embedder initialized"
     );
 
-    let vips_start = Instant::now();
-    info!("initializing libvips");
-    let vips = VipsApp::default("iris").context("failed to initialize libvips")?;
-    info!(
-        version = vips.version_string().unwrap_or("unknown"),
-        elapsed_ms = elapsed_ms(vips_start),
-        "libvips initialized"
-    );
-
     let state = WebState {
         webp_cache_dir: webp_cache::cache_dir(&db_path),
-        db_path,
+        db,
         text_embedder: Arc::new(Mutex::new(text_embedder)),
-        vips: Arc::new(vips),
     };
     let app = Router::new()
         .route("/", get(index))
@@ -222,12 +212,26 @@ async fn update_person_name(
     }
 }
 
-async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Response {
+async fn photo(
+    State(state): State<WebState>,
+    Path(photo_id): Path<i64>,
+    headers: HeaderMap,
+) -> Response {
     match photo_response(&state, photo_id) {
-        Ok(Some((bytes, content_type))) => Response::builder()
-            .header(header::CONTENT_TYPE, content_type)
-            .body(Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(Some((bytes, content_type, size, mtime))) => {
+            let etag = format!("\"{size}-{mtime}\"");
+            if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
+                if if_none_match.as_bytes() == etag.as_bytes() {
+                    return StatusCode::NOT_MODIFIED.into_response();
+                }
+            }
+            Response::builder()
+                .header(header::CONTENT_TYPE, content_type)
+                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::ETAG, etag)
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => {
             error!(photo_id, %error, "failed to serve photo");
@@ -242,7 +246,7 @@ async fn photo(State(state): State<WebState>, Path(photo_id): Path<i64>) -> Resp
 
 fn render_photo_view(state: &WebState, photo_id: i64) -> Result<Option<String>> {
     let start = Instant::now();
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let Some(photo) = db.photo_detail(photo_id)? else {
         warn!(photo_id, "photo detail not found");
         return Ok(None);
@@ -258,7 +262,7 @@ fn render_photo_view(state: &WebState, photo_id: i64) -> Result<Option<String>> 
 
 fn render_people(state: &WebState) -> Result<String> {
     let start = Instant::now();
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let people = db.people()?;
     info!(
         people_count = people.len(),
@@ -270,7 +274,7 @@ fn render_people(state: &WebState) -> Result<String> {
 
 fn render_person_view(state: &WebState, person_id: i64) -> Result<Option<String>> {
     let start = Instant::now();
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let Some(person) = db.person_detail(person_id)? else {
         warn!(person_id, "person not found");
         return Ok(None);
@@ -286,7 +290,7 @@ fn render_person_view(state: &WebState, person_id: i64) -> Result<Option<String>
 }
 
 fn save_person_name(state: &WebState, person_id: i64, display_name: &str) -> Result<bool> {
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let trimmed = display_name.trim();
     let display_name = if trimmed.is_empty() {
         None
@@ -307,7 +311,7 @@ fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
     info!(has_query = query.is_some(), "rendering index page");
 
     let db_start = Instant::now();
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let indexed_count = db.indexed_photo_count()?;
     info!(
         indexed_count,
@@ -359,10 +363,10 @@ fn render_index(state: &WebState, query: Option<&str>) -> Result<String> {
     Ok(page_html(indexed_count, query, &results))
 }
 
-fn photo_response(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'static str)>> {
+fn photo_response(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'static str, u64, u64)>> {
     let start = Instant::now();
     info!(photo_id, "photo lookup started");
-    let db = Database::open(&state.db_path)?;
+    let db = &state.db;
     let Some(path) = db.photo_path(photo_id)? else {
         warn!(photo_id, "photo not found");
         return Ok(None);
@@ -373,6 +377,14 @@ fn photo_response(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'
     }
 
     let bytes = std::fs::read(&path).with_context(|| format!("failed to read photo {path}"))?;
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("failed to stat photo {path}"))?;
+    let mtime = metadata
+        .modified()
+        .unwrap_or_else(|_| SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let content_type = content_type(&path);
     info!(
         photo_id,
@@ -382,7 +394,7 @@ fn photo_response(state: &WebState, photo_id: i64) -> Result<Option<(Vec<u8>, &'
         elapsed_ms = elapsed_ms(start),
         "photo loaded"
     );
-    Ok(Some((bytes, content_type)))
+    Ok(Some((bytes, content_type, metadata.len(), mtime)))
 }
 
 fn heic_webp_response(
@@ -390,11 +402,19 @@ fn heic_webp_response(
     photo_id: i64,
     source_path: &str,
     start: Instant,
-) -> Result<(Vec<u8>, &'static str)> {
+) -> Result<(Vec<u8>, &'static str, u64, u64)> {
     let convert_start = Instant::now();
-    let cached = webp_cache::ensure_heic_webp(&state.vips, &state.webp_cache_dir, source_path)?;
+    let cached = webp_cache::ensure_heic_webp(&state.webp_cache_dir, source_path)?;
     let bytes = std::fs::read(&cached.path)
         .with_context(|| format!("failed to read cached WebP {}", cached.path.display()))?;
+    let metadata = std::fs::metadata(&cached.path)
+        .with_context(|| format!("failed to stat cached WebP {}", cached.path.display()))?;
+    let mtime = metadata
+        .modified()
+        .unwrap_or_else(|_| SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     if cached.cache_hit {
         info!(
@@ -417,7 +437,7 @@ fn heic_webp_response(
         );
     }
 
-    Ok((bytes, "image/webp"))
+    Ok((bytes, "image/webp", metadata.len(), mtime))
 }
 
 fn elapsed_ms(start: Instant) -> u128 {

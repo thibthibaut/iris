@@ -84,7 +84,7 @@ fn scan_root(
             continue;
         }
 
-        if let Some(limit) = ctx.limit
+        if let Some(limit) = ctx.scan_limit
             && stats.scanned >= limit
         {
             break;

@@ -9,6 +9,7 @@ axum = "0.7"
 blake3 = "1"
 bytemuck = "1"
 chrono = { version = "0.4", features = ["serde"] }
+comfy-table = "7"
 clap = { version = "4", features = ["derive"] }
 face_id = "0.4.1"
 heic = "0.1.4"

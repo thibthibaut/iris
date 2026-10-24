@@ -18,7 +18,7 @@ impl BatchProcessor for ImageEmbeddingProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_missing_image_embedding(ctx.limit)?;
+        let photos = ctx.db.photos_missing_image_embedding(ctx.pending_limit)?;
         let pb = progress::bar(photos.len(), "image embeddings");
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let embedder = runtime
@@ -101,7 +101,7 @@ impl BatchProcessor for OcrTextEmbeddingProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_missing_ocr_text_embedding(ctx.limit)?;
+        let photos = ctx.db.photos_missing_ocr_text_embedding(ctx.pending_limit)?;
         let pb = progress::bar(photos.len(), "text embeddings");
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let embedder = runtime

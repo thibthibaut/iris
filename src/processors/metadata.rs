@@ -18,7 +18,7 @@ impl BatchProcessor for MetadataProcessor {
     }
 
     fn run(&self, ctx: &AppContext) -> Result<()> {
-        let photos = ctx.db.photos_missing_metadata(ctx.limit)?;
+        let photos = ctx.db.photos_missing_metadata(ctx.pending_limit)?;
         let pb = progress::bar(photos.len(), "metadata");
         let mut done = 0;
         let mut failed = 0;

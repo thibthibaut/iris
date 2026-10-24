@@ -6,7 +6,7 @@ mod geo;
 mod image_quality;
 mod metadata;
 mod ocr;
-mod progress;
+pub mod progress;
 mod webp_cache;
 
 use anyhow::Result;

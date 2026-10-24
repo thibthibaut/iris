@@ -27,6 +27,7 @@ pub enum Command {
     Ocr,
     WebpCache,
     ShowDb,
+    Verify,
     Serve {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
