@@ -29,3 +29,42 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 7. Never send images to a network service except through the VLM stages, which enforce the privacy settings.
 8. Tests live at the agreed seams only: the pure core and the indexing helpers. Keep them few and behavioural. Check the GUI with a headless browser screenshot.
 9. Quality v2 and Rejected are computed on the fly from stored measurements (`iris_core::quality`), so threshold and Couple changes apply at once.
+
+## Status and next steps (2026-10-24)
+
+### Running the app during QA
+- The app runs from a copy of the release binary: `/private/tmp/claude-501/-Users-thibaut-ws-iris/885e06f2-0a26-419b-a38f-d93ce37c8c97/scratchpad/iris-app serve --port 3000`, started from the repo root with `PATH="/opt/homebrew/bin:$PATH"` (Typst). Copy `target/release/iris` over it before restarting so rebuilds don't clobber the running binary.
+- The user labels People while it runs: restart only when no Override was saved in the last 20 s (`select (strftime('%s','now')*1000 - max(ts_ms))/1000 from overrides`).
+- Screenshots: headless Brave, `shot.sh URL OUT [W,H]` in the same scratchpad. Its cache once served a stale `app.css`; delete `brave-profile/` if styles look old. Tell the user to hard-refresh (⌘⇧R) after CSS/JS changes.
+- DB: `album.db` at the repo root (gitignored). Proxies: `.iris-cache/webp/`.
+
+### State of the data
+- Indexed: 980 photos (626 photographer, 354 guests), 653 Shots, 92 Persons, ~142 faces to confirm. All 9 Chapters populated; first album built (48 pages, 23 Spreads).
+- The user named ~20 people, set Emna = Bride, Thibaut = Groom, started filling Groups. No Quotas yet.
+- Default Chapter start times in `Settings::default()` are guesses; the photographer's mairie photos start at 14:07. The user should set real times in Settings.
+
+### Lessons (don't re-learn them)
+- `face_id` returns bboxes as fractions of the image (0–1), not pixels.
+- libvips decodes sequentially: an image pipeline can be read once; derive the 400 px proxy from the saved 1200 px file.
+- Settings Overrides use dotted paths; a number indexes a list (`chapters.3.starts_at`).
+- `htmx.onLoad` gets the swapped child, not its container: re-init drag-and-drop on `document`.
+- Ingest failures are retried only by an explicit Re-run (failed ≠ pending).
+
+### Code review of `17650dc...HEAD` — to fix next, in this order
+**Print correctness (Spec):**
+1. `render.rs` `render_print`: right-hand pages print the next page's number (each side passes `(page, page+1)` after `page` is incremented).
+2. `stages/export.rs`: bleed grows edge Slots but keeps the old Crop, so `crop_original` stretches non-uniformly (~0.8 %). Grow the Crop with the Slot.
+3. Bans don't reach Locked Spreads (`build`, `apply_locks`): a Banned photo still prints. At least warn on the Spread; better, list it as a conflict.
+4. A Pin can vanish when all of a Chapter's Spreads are Locked or the layout is infeasible (`generated[c] == 0`, `layout_chapter` returns `[]`). Report it as a conflict.
+5. `album.rs` `group_count` reserves a Spread for every Group with members even when its Group Spread can't be built → `ours` under target.
+6. Preflight is partly fake: `fonts_embedded: true` hard-coded; page size incl. bleed not checked; parity check can't fail (`2+2n`); text in the safe zone not checked. Add the golden PDF test from PLAN §9.4.
+
+**Missing (Spec):** conflicts (§2.4: an Override that can't apply shows on its Spread); preflight errors linking to their Spread; Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
+
+**Standards:**
+- CLAUDE.md rule 1: no GUI for Chapter weights/prompts/titles, Groups, Editions, wedding date, `design.body_font`; `Export::all(&["ours", …])` and `HERO_CHAPTERS` hard-code setting keys.
+- CONTEXT.md vocabulary: "Family"/"families" in UI text (use Group), `ChapterSection`/`sections` (use Chapter), `duplicates`/`.dup-group` (use Shot/copies), `SpreadLayout` (borderline).
+- Smells: string keys for Chapter/Group/Edition/Template; bare `i64` Persons; Proposal notes as encoded strings (`"quota:{p}:{q}:{r}"`) → typed fields; `exports()` 6-tuple → struct; `Spread { … }` literal duplicated in `album.rs`; "face is Couple" check duplicated in `state.rs` and `album.rs`; `jobs::hash` → `fingerprint`.
+- Possible bugs: `Source::parse` maps unknown values to Guest; Export staleness ignores texts/design/Bans; `couple_anchors()` recomputed per Photo in `AlbumState::load`.
+
+**Then:** update PLAN.md §13 ("As built") to match, and continue QA with the user (People → Chapter times → Chapters → rebuild → Spread editor → export a proof).
