@@ -166,6 +166,13 @@ impl Stage for Chapters {
                 zero_shot: zero_shot(photo.id),
                 latest_possible,
             };
+            // Mistral's answer for an unsure photo, when the user asked for it.
+            if let Some(index) = crate::stages::vlm::chapter(&ctx.db, photo).and_then(|key| settings.chapter_index(&key)) {
+                let order = neighbours.iter().find(|(c, _, _)| *c == index).map_or(1e6, |(_, s, o)| o + 0.5 - s * 0.1);
+                assigned.insert(photo.id, (index, 0.9, 0.5, "mistral", order));
+                sink.inc(1);
+                continue;
+            }
             if let Some(guess) = guess_guest_chapter(&evidence, chapters.len()) {
                 if guess.margin < 0.15 {
                     low_confidence += 1;

@@ -311,6 +311,18 @@ impl Database {
         Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
     }
 
+    /// Every cached answer of a task: (content hash, response).
+    pub fn vlm_answers(&self, task: &str) -> Result<Vec<(String, serde_json::Value)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT blake3_hash, response_json FROM vlm_cache WHERE task = ?")?;
+        let rows = stmt.query_map(params![task], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        rows.map(|row| {
+            let (hash, raw) = row?;
+            Ok((hash, serde_json::from_str(&raw).unwrap_or_default()))
+        })
+        .collect()
+    }
+
     pub fn put_vlm(&self, hash: &str, task: &str, prompt_version: i64, response: &serde_json::Value) -> Result<()> {
         self.conn().execute(
             "INSERT OR REPLACE INTO vlm_cache(blake3_hash, task, prompt_version, response_json) VALUES (?, ?, ?, ?)",

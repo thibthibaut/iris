@@ -32,6 +32,7 @@ struct StageCards {
 
 struct StageCard {
     status: StageStatus,
+    confirm: Option<String>,
     state: &'static str,
     last_run: String,
     last_error: Option<String>,
@@ -74,6 +75,7 @@ fn load_cards(state: &AppState) -> anyhow::Result<StageCards> {
             "done"
         };
         stages.push(StageCard {
+            confirm: stage.confirm(&db, &snapshot.decisions),
             last_run: status.last_run_ms.map(ago).unwrap_or_else(|| "never".into()),
             last_error: last_job.as_ref().filter(|job| job.status == "failed").and_then(|job| job.error.clone()),
             last_message: last_job.and_then(|job| job.message),

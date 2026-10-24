@@ -10,6 +10,7 @@ mod quality;
 mod scan;
 mod select;
 mod shots;
+pub mod vlm;
 
 use std::sync::{
     Arc,
@@ -37,7 +38,9 @@ pub fn all() -> Vec<Arc<dyn Stage>> {
         Arc::new(cluster::Cluster),
         Arc::new(shots::Shots),
         Arc::new(chapters::Chapters),
+        Arc::new(vlm::Vlm(vlm::Task::ChapterTiebreak)),
         Arc::new(select::Select),
+        Arc::new(vlm::Vlm(vlm::Task::PickReview)),
     ];
     stages
         .into_iter()

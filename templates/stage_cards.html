@@ -17,7 +17,7 @@
     <div class="stage-num">{{ loop.index }}</div>
     <div class="stage-body">
       <div class="stage-title">
-        <h3>{{ card.status.title }}</h3>
+        <h3>{{ card.status.title }}</h3>{% if card.status.optional %}<span class="badge">optional</span>{% endif %}
         <span class="badge badge-{{ card.state }}">
           {% if card.state == "running" %}running{% else if card.state == "queued" %}queued{% else if card.state == "failed" %}failed{% else if card.state == "stale" %}to run{% else %}done{% endif %}
         </span>
@@ -42,7 +42,7 @@
       {% if card.state == "running" || card.state == "queued" %}
       <button class="ghost" hx-post="/api/stages/{{ card.status.name }}/cancel" hx-target="#cards">Cancel</button>
       {% else %}
-      <button class="{% if card.status.stale %}primary{% else %}ghost{% endif %}" hx-post="/api/stages/{{ card.status.name }}/run" hx-target="#cards">{% if card.status.last_run_ms.is_some() %}Re-run{% else %}Run{% endif %}</button>
+      <button class="{% if card.status.stale %}primary{% else %}ghost{% endif %}" hx-post="/api/stages/{{ card.status.name }}/run" hx-target="#cards" {% if let Some(question) = card.confirm %}hx-confirm="{{ question }}"{% endif %}>{% if card.status.last_run_ms.is_some() %}Re-run{% else %}Run{% endif %}</button>
       {% endif %}
     </div>
   </li>

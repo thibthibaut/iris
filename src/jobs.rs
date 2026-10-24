@@ -87,6 +87,14 @@ pub trait Stage: Send + Sync {
     fn decisions_key(&self, _decisions: &Decisions) -> String {
         String::new()
     }
+    /// Optional stages never run as part of "Run all stale".
+    fn optional(&self) -> bool {
+        false
+    }
+    /// A question to confirm before running (e.g. what would be sent where, and the cost).
+    fn confirm(&self, _db: &Database, _decisions: &Decisions) -> Option<String> {
+        None
+    }
     fn run(&self, ctx: &StageCtx, sink: &dyn ProgressSink, cancel: &CancelToken) -> Result<()>;
 }
 
@@ -102,6 +110,7 @@ pub struct StageStatus {
     pub last_run_ms: Option<i64>,
     pub stale: bool,
     pub stale_reason: Option<String>,
+    pub optional: bool,
 }
 
 pub fn stage_status(db: &Database, stages: &[Arc<dyn Stage>], stage: &dyn Stage, decisions: &Decisions) -> Result<StageStatus> {
@@ -142,8 +151,9 @@ pub fn stage_status(db: &Database, stages: &[Arc<dyn Stage>], stage: &dyn Stage,
         failed,
         pending,
         last_run_ms: run.map(|run| run.finished_at_ms),
-        stale: reason.is_some(),
-        stale_reason: reason,
+        stale: reason.is_some() && !stage.optional(),
+        stale_reason: reason.filter(|_| !stage.optional()),
+        optional: stage.optional(),
     })
 }
 
@@ -314,7 +324,7 @@ impl JobManager {
         let db = Database::open(&self.0.config.database_path)?;
         let decisions = Decisions::replay(&db.active_overrides()?);
         let mut dirty: Vec<&str> = Vec::new();
-        for stage in self.0.stages.iter().filter(|s| !s.name().starts_with("export:")) {
+        for stage in self.0.stages.iter().filter(|s| !s.name().starts_with("export:") && !s.optional()) {
             let status = stage_status(&db, &self.0.stages, stage.as_ref(), &decisions)?;
             let upstream_dirty = stage.deps().iter().any(|dep| dirty.contains(dep));
             if status.stale || upstream_dirty {

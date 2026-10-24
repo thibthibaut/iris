@@ -20,6 +20,8 @@ pub struct AlbumState {
     pub by_id: HashMap<PhotoId, usize>,
     pub evaluations: HashMap<PhotoId, Evaluation>,
     pub faces_by_photo: HashMap<PhotoId, Vec<usize>>,
+    /// Mistral's reviews of picks, by Photo.
+    pub reviews: HashMap<PhotoId, serde_json::Value>,
 }
 
 impl AlbumState {
@@ -37,7 +39,12 @@ impl AlbumState {
         for (index, face) in faces.iter().enumerate() {
             faces_by_photo.entry(face.photo_id).or_default().push(index);
         }
-        let mut state = Self { decisions, people, faces, photos, by_id, evaluations: HashMap::new(), faces_by_photo };
+        let answers: HashMap<String, serde_json::Value> = db.vlm_answers("pick_review")?.into_iter().collect();
+        let reviews = photos
+            .iter()
+            .filter_map(|p| Some((p.id, answers.get(p.blake3_hash.as_ref()?)?.clone())))
+            .collect();
+        let mut state = Self { decisions, people, faces, photos, by_id, evaluations: HashMap::new(), faces_by_photo, reviews };
         state.evaluations = state
             .photos
             .iter()

@@ -39,7 +39,7 @@ fn main() -> Result<()> {
             let ctx = StageCtx::open(&config)?;
             let all = stages::all();
             let mut dirty: Vec<&str> = Vec::new();
-            for stage in all.iter().filter(|s| !s.name().starts_with("export:")) {
+            for stage in all.iter().filter(|s| !s.name().starts_with("export:") && !s.optional()) {
                 let status = stage_status(&ctx.db, &all, stage.as_ref(), &ctx.decisions)?;
                 if status.stale || stage.deps().iter().any(|dep| dirty.contains(dep)) {
                     dirty.push(stage.name());

@@ -177,6 +177,15 @@ pub fn warnings(state: &AlbumState, spread: &Spread) -> Vec<String> {
     let mut out = Vec::new();
     for placed in &spread.photos {
         let Some(photo) = state.photo(placed.photo) else { continue };
+        if let Some(review) = state.reviews.get(&photo.id) {
+            let flags: Vec<&str> = ["eyes_closed", "mid_blink_or_mid_speech", "unflattering", "heads_cut", "motion_blur"]
+                .into_iter()
+                .filter(|flag| review[*flag].as_bool() == Some(true))
+                .collect();
+            if !flags.is_empty() {
+                out.push(format!("{}: Mistral flags {} — {}", photo.file_name, flags.join(", ").replace('_', " "), review["note"].as_str().unwrap_or("")));
+            }
+        }
         let (Some(width), Some(height)) = (photo.width, photo.height) else { continue };
         let ppi = (width as f64 * placed.crop.w) / (placed.rect.w / 25.4);
         if ppi < 250.0 {
