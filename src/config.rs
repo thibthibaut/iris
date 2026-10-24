@@ -1,3 +1,6 @@
+//! Bootstrap configuration: only where things live. Every other setting is in the DB,
+//! edited from the GUI (see `settings`).
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -6,29 +9,12 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub database_path: PathBuf,
-    pub library_paths: Vec<PathBuf>,
-    pub ocr_models_dir: PathBuf,
-    pub ocr_edge_density_threshold: f64,
-    #[serde(default)]
-    pub faces: FaceConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct FaceConfig {
-    #[serde(default = "default_face_min_cluster_size")]
-    pub min_cluster_size: usize,
-}
-
-impl Default for FaceConfig {
-    fn default() -> Self {
-        Self {
-            min_cluster_size: default_face_min_cluster_size(),
-        }
-    }
-}
-
-fn default_face_min_cluster_size() -> usize {
-    6
+    pub photographer_root: PathBuf,
+    pub guests_root: PathBuf,
+    /// WebP thumbnails and other derived files.
+    pub cache_dir: PathBuf,
+    /// Versioned print PDFs.
+    pub exports_dir: PathBuf,
 }
 
 impl Config {
@@ -37,31 +23,28 @@ impl Config {
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Self = toml::from_str(&raw).context("failed to parse TOML config")?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
-        config.normalize(base);
-        config.validate()?;
+        for path in [
+            &mut config.database_path,
+            &mut config.photographer_root,
+            &mut config.guests_root,
+            &mut config.cache_dir,
+            &mut config.exports_dir,
+        ] {
+            *path = absolutize(base, path);
+        }
         Ok(config)
     }
 
-    fn normalize(&mut self, base: &Path) {
-        self.database_path = absolutize(base, &self.database_path);
-        self.ocr_models_dir = absolutize(base, &self.ocr_models_dir);
-        self.library_paths = self
-            .library_paths
-            .iter()
-            .map(|path| absolutize(base, path))
-            .collect();
+    pub fn webp_dir(&self) -> PathBuf {
+        self.cache_dir.join("webp")
     }
 
-    fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            !self.library_paths.is_empty(),
-            "library_paths must not be empty"
-        );
-        anyhow::ensure!(
-            self.faces.min_cluster_size >= 2,
-            "faces.min_cluster_size must be >= 2"
-        );
-        Ok(())
+    pub fn preview_dir(&self) -> PathBuf {
+        self.cache_dir.join("previews")
+    }
+
+    pub fn temp_dir(&self) -> PathBuf {
+        self.cache_dir.join("tmp")
     }
 }
 
@@ -70,62 +53,5 @@ fn absolutize(base: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         base.join(path)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_config() {
-        let config: Config = toml::from_str(
-            r#"
-database_path = "iris.db"
-library_paths = ["./Photos"]
-ocr_models_dir = "./models"
-ocr_edge_density_threshold = 0.08
-
-[faces]
-min_cluster_size = 8
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(config.library_paths.len(), 1);
-        assert_eq!(config.ocr_edge_density_threshold, 0.08);
-        assert_eq!(config.faces.min_cluster_size, 8);
-    }
-
-    #[test]
-    fn defaults_face_config() {
-        let config: Config = toml::from_str(
-            r#"
-database_path = "iris.db"
-library_paths = ["./Photos"]
-ocr_models_dir = "./models"
-ocr_edge_density_threshold = 0.08
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(config.faces.min_cluster_size, 6);
-    }
-
-    #[test]
-    fn partial_faces_config_uses_defaults() {
-        let config: Config = toml::from_str(
-            r#"
-database_path = "iris.db"
-library_paths = ["./Photos"]
-ocr_models_dir = "./models"
-ocr_edge_density_threshold = 0.08
-
-[faces]
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(config.faces.min_cluster_size, 6);
     }
 }

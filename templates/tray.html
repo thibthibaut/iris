@@ -1,0 +1,13 @@
+<h3>Instead of {{ name }}</h3>
+<form hx-get="/api/spread/{{ uid }}/tray/{{ photo }}" hx-target="#tray" hx-trigger="submit">
+  <input type="hidden" name="edition" value="{{ edition }}">
+  <input type="search" name="q" value="{{ query }}" placeholder="Search: “dancing”, “cake”…">
+</form>
+<p class="small-print">Drag one onto a Slot, or onto a page to add it.</p>
+<div class="tray">
+  {% for (id, name, usable) in candidates %}
+  <img src="/img/{{ id }}/s" data-drag="tray:{{ id }}" draggable="true" title="{{ name }}{% if !usable %} (rejected or banned){% endif %}" class="{% if !usable %}unusable{% endif %}" hx-get="/photos/{{ id }}" hx-target="#drawer" hx-trigger="dblclick">
+  {% else %}
+  <p class="muted">No alternatives.</p>
+  {% endfor %}
+</div>

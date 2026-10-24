@@ -1,0 +1,8 @@
+<div class="drawer-head"><h2>{{ title }}: failures</h2><button class="icon" onclick="closeDrawer()">✕</button></div>
+<ul class="failures">
+  {% for (photo, reason) in failures %}
+  <li><a href="#" hx-get="/photos/{{ photo.id }}" hx-target="#drawer">{{ photo.file_name }}</a><pre>{{ reason }}</pre></li>
+  {% else %}
+  <li class="muted">No failures.</li>
+  {% endfor %}
+</ul>

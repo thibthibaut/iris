@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Spread{% endblock %}
+{% block content %}
+{{ editor|safe }}
+<script>
+let selected = null;
+function selectSlot(el) {
+  document.querySelectorAll(".slot.selected").forEach((s) => s.classList.remove("selected"));
+  el.classList.add("selected");
+  selected = el.dataset.photo;
+  document.querySelectorAll("[data-needs-slot]").forEach((b) => (b.disabled = false));
+  const editor = document.getElementById("editor");
+  htmx.ajax("GET", `/api/spread/${editor.dataset.uid}/tray/${selected}?edition=${editor.dataset.edition}`, { target: "#tray" });
+}
+function act(op, values = {}) {
+  const editor = document.getElementById("editor");
+  return htmx.ajax("POST", `/api/spread/${editor.dataset.uid}/edit`, {
+    target: "#editor", swap: "outerHTML",
+    values: Object.assign({ op, edition: editor.dataset.edition }, values),
+  }).then(() => {
+    // Keep the same Slot selected after a re-render.
+    const again = selected && document.querySelector(`.slot[data-photo="${selected}"]`);
+    if (again) again.classList.add("selected"), document.querySelectorAll("[data-needs-slot]").forEach((b) => (b.disabled = false));
+  });
+}
+function onSelected(op, values = {}) {
+  if (!selected) { toast("Click a photo first"); return; }
+  act(op, Object.assign({ a: selected }, values));
+}
+document.addEventListener("dragstart", (event) => {
+  const source = event.target.closest("[data-drag]");
+  if (source) event.dataTransfer.setData("text/plain", source.dataset.drag);
+});
+document.addEventListener("dragover", (event) => {
+  if (event.target.closest(".slot, .page-drop")) event.preventDefault();
+});
+document.addEventListener("drop", (event) => {
+  const data = event.dataTransfer.getData("text/plain");
+  if (!data) return;
+  const [kind, id] = data.split(":");
+  const slot = event.target.closest(".slot");
+  event.preventDefault();
+  if (slot) {
+    if (kind === "slot" && id !== slot.dataset.photo) act("swap", { a: id, b: slot.dataset.photo });
+    if (kind === "tray") act("place", { a: slot.dataset.photo, b: id });
+  } else {
+    const page = event.target.closest(".page-drop");
+    if (page && kind === "tray") act("add", { b: id, page: page.dataset.page });
+  }
+});
+window.pageKeys = (event) => {
+  const editor = document.getElementById("editor");
+  if (event.key === "ArrowLeft" && editor.dataset.prev) location.href = `/spread/${editor.dataset.prev}?edition=${editor.dataset.edition}`;
+  if (event.key === "ArrowRight" && editor.dataset.next) location.href = `/spread/${editor.dataset.next}?edition=${editor.dataset.edition}`;
+  if (event.key === "b" || event.key === "B") onSelected("ban");
+  if (event.key === "p" || event.key === "P") onSelected("pin");
+  if (event.key === "l" || event.key === "L") act(editor.dataset.locked === "true" ? "unlock" : "lock");
+  if (event.key === "Delete" || event.key === "Backspace") onSelected("remove");
+};
+</script>
+{% endblock %}

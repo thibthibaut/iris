@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Inventory{% endblock %}
+{% block content %}
+<section class="page-head"><div><h1>Inventory</h1><p class="lead">What the folders contain, before any choice is made.</p></div><a class="button ghost" href="/">← Index</a></section>
+<div class="facts">
+  <div class="fact"><b>{{ total }}</b><span>photos</span></div>
+  <div class="fact"><b>{{ with_time }}</b><span>with a capture time</span></div>
+  <div class="fact"><b>{{ videos_skipped }}</b><span>videos skipped</span></div>
+  <div class="fact"><b>{{ duplicates.len() }}</b><span>groups of exact copies</span></div>
+</div>
+<div class="tables">
+  {% for (title, rows) in tables %}
+  <table class="data"><thead><tr><th>{{ title }}</th><th class="num">Photos</th></tr></thead><tbody>
+    {% for (value, count) in rows %}<tr><td>{{ value }}</td><td class="num">{{ count }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endfor %}
+  <table class="data"><thead><tr><th>Resolution</th><th class="num">Photographer</th><th class="num">Guests</th></tr></thead><tbody>
+    {% for (label, p, g) in megapixels %}<tr><td>{{ label }}</td><td class="num">{{ p }}</td><td class="num">{{ g }}</td></tr>{% endfor %}
+  </tbody></table>
+  <table class="data"><thead><tr><th>Guest photos sent on</th><th class="num">Photos</th></tr></thead><tbody>
+    {% for (day, count) in sent_by_day %}<tr><td>{{ day }}</td><td class="num">{{ count }}</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% if !duplicates.is_empty() %}
+<h2>Exact copies</h2>
+<div class="dup-groups">
+  {% for group in duplicates %}
+  <div class="dup-group">{% for id in group %}<img src="/img/{{ id }}/s" loading="lazy" hx-get="/photos/{{ id }}" hx-target="#drawer" hx-on::after-request="openDrawer()">{% endfor %}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

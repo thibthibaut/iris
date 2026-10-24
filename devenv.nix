@@ -16,6 +16,7 @@
     pkgs.lazygit
     pkgs.pkg-config
     pkgs.vips
+    pkgs.typst
     pkgs.openssl
     pkgs.llvmPackages.libclang
     pkgs.llvmPackages.libcxxClang

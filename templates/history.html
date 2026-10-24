@@ -1,0 +1,9 @@
+<div class="drawer-head"><h3>Your decisions</h3><button class="icon" onclick="toggleHistory()">✕</button></div>
+<p class="small-print">Newest first. ⌘Z undoes the latest, ⇧⌘Z redoes.</p>
+<ol class="history-list">
+  {% for (label, when, undone) in rows %}
+  <li class="{% if *undone %}undone{% endif %}"><span>{{ label }}</span><small>{{ when }}{% if *undone %} · undone{% endif %}</small></li>
+  {% else %}
+  <li class="muted">Nothing yet.</li>
+  {% endfor %}
+</ol>

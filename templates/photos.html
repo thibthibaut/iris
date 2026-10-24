@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Photos{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><h1>Photos</h1><p class="lead">{{ total }} photos match. Click one to Pin it (must be in the album), Ban it (never), or move it to another Chapter.</p></div>
+</section>
+<form class="filters" hx-get="/photos" hx-target="body" hx-push-url="true" hx-trigger="change, submit">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search: “cutting the cake”, “dancing”…">
+  <select name="source">
+    <option value="">All sources</option>
+    <option value="photographer" {% if filters.source == "photographer" %}selected{% endif %}>Photographer</option>
+    <option value="guest" {% if filters.source == "guest" %}selected{% endif %}>Guests</option>
+  </select>
+  <select name="chapter">
+    <option value="">All Chapters</option>
+    {% for (key, title) in chapters %}<option value="{{ key }}" {% if filters.chapter == key.as_str() %}selected{% endif %}>{{ title }}</option>{% endfor %}
+    <option value="none" {% if filters.chapter == "none" %}selected{% endif %}>No Chapter yet</option>
+  </select>
+  <select name="status">
+    <option value="">Any status</option>
+    {% for (value, label) in [("in_album", "In the album"), ("not_in_album", "Usable, not in the album"), ("pinned", "Pinned"), ("banned", "Banned"), ("rejected", "Rejected"), ("duplicates", "In a Shot with copies")] %}
+    <option value="{{ value }}" {% if filters.status.as_str() == *value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <select name="person">
+    <option value="">Anyone</option>
+    {% for (anchor, name) in persons %}<option value="{{ anchor }}" {% if filters.person == anchor.to_string() %}selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+  {% if !filters.shot.is_empty() %}<input type="hidden" name="shot" value="{{ filters.shot }}"><a class="chip" href="/photos">Shot {{ filters.shot }} ✕</a>{% endif %}
+</form>
+<div class="grid" id="grid">
+  {{ grid|safe }}
+</div>
+{% endblock %}

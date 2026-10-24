@@ -1,0 +1,11 @@
+{% if let Some(job) = running %}
+<div class="jobbar running">
+  <span class="pulse"></span>
+  <strong>{{ job.title }}</strong>
+  <span class="jobbar-progress"><span style="width: {{ percent() }}%"></span></span>
+  <span class="muted">{{ job.done }} / {{ job.total }}{% if job.failed > 0 %} · <span class="bad">{{ job.failed }} failed</span>{% endif %}{% if !eta().is_empty() %} · about {{ eta() }} left{% endif %}</span>
+  {% if !job.message.is_empty() %}<span class="muted ellipsis">{{ job.message }}</span>{% endif %}
+  {% if !queued.is_empty() %}<span class="muted">then {{ queued.join(", ") }}</span>{% endif %}
+  <button class="small ghost" hx-post="/api/stages/{{ job.stage }}/cancel" hx-swap="none">Cancel</button>
+</div>
+{% endif %}

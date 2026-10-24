@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% macro num(key, label, value, help) %}
+<label>{{ label }}
+  <input type="number" step="any" name="value" value="{{ value }}" hx-post="/api/settings" hx-vals='{"key": "{{ key }}", "kind": "number"}' hx-trigger="change" hx-swap="none">
+  {% if !help.is_empty() %}<small>{{ help }}</small>{% endif %}
+</label>
+{% endmacro %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="page-head"><div><h1>Settings</h1><p class="lead">Every change is saved at once and can be undone (⌘Z).</p></div></section>
+<div class="settings">
+  <fieldset><legend>Album</legend>
+    {% call num("page_target", "Pages in “ours”", s.page_target, "Family Editions have 6 pages less.") %}
+    {% call num("shots_per_spread", "Shots per Spread (average)", s.shots_per_spread, "Spreads vary from 3 to 9.") %}
+    {% call num("max_heroes", "Heroes (max)", s.max_heroes, "A Hero fills a whole Page.") %}
+    {% call num("couple_share", "Couple Share target", s.couple_share, "Share of Shots in Core Spreads showing the bride or groom (0–1).") %}
+    <label>Group Spreads go in <select name="value" hx-post="/api/settings" hx-vals='{"key": "group_spread_chapter", "kind": "text"}' hx-swap="none">
+      {% for c in s.chapters %}<option value="{{ c.key }}" {% if c.key == s.group_spread_chapter %}selected{% endif %}>{{ c.title_fr }}</option>{% endfor %}
+    </select></label>
+  </fieldset>
+  <fieldset><legend>Quality gate</legend>
+    {% call num("gate.guest_min_quality", "Guest photos: min quality", s.gate.guest_min_quality, "") %}
+    {% call num("gate.guest_min_jpeg_q", "Guest photos: min JPEG quality", s.gate.guest_min_jpeg_q, "") %}
+    {% call num("gate.guest_min_megapixels", "Guest photos: min megapixels", s.gate.guest_min_megapixels, "") %}
+    {% call num("gate.photographer_min_quality", "Photographer: min quality", s.gate.photographer_min_quality, "") %}
+    {% call num("gate.screenshot_max", "Max screenshot score", s.gate.screenshot_max, "") %}
+    {% call num("gate.min_face_sharpness", "Min sharpness of important faces", s.gate.min_face_sharpness, "") %}
+    <a class="button ghost" href="/tuning">Tune thresholds on examples →</a>
+  </fieldset>
+  <fieldset><legend>Shots (copies and bursts)</legend>
+    {% call num("shots.max_hamming", "Max hash distance", s.shots.max_hamming, "Lower = stricter.") %}
+    {% call num("shots.min_clip_cosine", "Min visual similarity", s.shots.min_clip_cosine, "0–1") %}
+    {% call num("shots.burst_seconds", "Burst window (s)", s.shots.burst_seconds, "") %}
+    {% call num("shots.burst_sequence_gap", "Burst: max camera file-number gap", s.shots.burst_sequence_gap, "") %}
+  </fieldset>
+  <fieldset><legend>Faces</legend>
+    {% call num("face_min_cluster_size", "Faces needed to make a Person", s.face_min_cluster_size, "") %}
+    {% call num("face_soft_distance", "Attach leftover faces closer than", s.face_soft_distance, "L2 distance; they are flagged to confirm.") %}
+    {% call num("face_min_height_frac", "Ignore faces smaller than (share of photo height)", s.face_min_height_frac, "") %}
+  </fieldset>
+  <fieldset><legend>Photographer folders → Chapters</legend>
+    {% for (folder, keys) in folders %}
+    <label>{{ folder }}<input name="value" value="{{ keys }}" hx-post="/api/settings" hx-vals='{"key": "folder_chapters.{{ folder }}", "kind": "list"}' hx-trigger="change" hx-swap="none"></label>
+    {% endfor %}
+    <p class="small-print">Chapter keys, comma-separated, in the order they happened. Chapters: {% for c in s.chapters %}<code>{{ c.key }}</code> {% endfor %}</p>
+  </fieldset>
+  <fieldset><legend>Printer and review</legend>
+    <label>Printer profile <select name="value" hx-post="/api/settings" hx-vals='{"key": "printer", "kind": "text"}' hx-swap="none">
+      {% for p in ["flexilivre_a4_landscape_hard", "saal_digital_a4_landscape", "blurb_25x20_landscape"] %}<option {% if s.printer.as_str() == *p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select></label>
+    <label>VLM model (OpenRouter, Mistral only)<input name="value" value="{{ s.vlm.model }}" hx-post="/api/settings" hx-vals='{"key": "vlm.model", "kind": "text"}' hx-trigger="change" hx-swap="none"></label>
+    {% call num("vlm.max_calls", "VLM budget (calls)", s.vlm.max_calls, "") %}
+  </fieldset>
+  <fieldset class="wide"><legend>Backup</legend>
+    <p class="small-print">Copy this to keep your settings; paste a saved copy and press Import to restore them.</p>
+    <form hx-post="/api/settings" hx-vals='{"key": "", "kind": "json"}' hx-swap="none">
+      <textarea name="value" rows="10" spellcheck="false">{{ json }}</textarea>
+      <button class="ghost">Import</button>
+    </form>
+  </fieldset>
+</div>
+{% endblock %}

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Text & design{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>Text &amp; design</h1>
+    <p class="lead">Every title is in French and Tunisian Arabic, at the same size. Type or paste the Arabic (written by Emna); it is shown here as it will print. Changes are saved as you leave a field.</p>
+  </div>
+</section>
+<style>
+  :root { --title-font: "{{ design.title_font }}"; --arabic-font: "{{ design.arabic_font }}"; }
+  @font-face { font-family: "Bungee"; src: url("/assets/fonts/Bungee-Regular.ttf"); }
+  @font-face { font-family: "Monoton"; src: url("/assets/fonts/Monoton-Regular.ttf"); }
+  @font-face { font-family: "Shrikhand"; src: url("/assets/fonts/Shrikhand-Regular.ttf"); }
+  @font-face { font-family: "Reem Kufi"; src: url("/assets/fonts/ReemKufi[wght].ttf"); }
+  @font-face { font-family: "Aref Ruqaa"; src: url("/assets/fonts/ArefRuqaa-Regular.ttf"); }
+  @font-face { font-family: "Noto Naskh Arabic"; src: url("/assets/fonts/NotoNaskhArabic[wght].ttf"); }
+</style>
+<div class="text-rows">
+  {% for row in rows %}
+  <div class="text-row">
+    <div class="text-label">{{ row.label }}</div>
+    <input class="fr" value="{{ row.fr }}" name="value" hx-post="/api/text" hx-vals='{"key": "{{ row.key }}.fr"}' hx-trigger="change" hx-swap="none" oninput="preview(this)">
+    <input class="ar" dir="rtl" lang="ar" value="{{ row.ar }}" name="value" placeholder="بالعربي" hx-post="/api/text" hx-vals='{"key": "{{ row.key }}.ar"}' hx-trigger="change" hx-swap="none" oninput="preview(this)">
+    <div class="title-preview">
+      <span class="tp-fr">{{ row.fr }}</span><span class="tp-ar" dir="rtl">{{ row.ar }}</span>
+      <i class="tp-stripes"><b></b><b></b><b></b></i>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<div class="settings">
+  <fieldset><legend>Cover</legend>
+    <label>Names<input name="value" value="{{ design.names }}" hx-post="/api/settings" hx-vals='{"key": "design.names", "kind": "text"}' hx-trigger="change" hx-swap="none"></label>
+    <label>Date (French)<input name="value" value="{{ design.cover_date_fr }}" hx-post="/api/settings" hx-vals='{"key": "design.cover_date_fr", "kind": "text"}' hx-trigger="change" hx-swap="none"></label>
+    <label>Date (Arabic)<input dir="rtl" name="value" value="{{ design.cover_date_ar }}" hx-post="/api/settings" hx-vals='{"key": "design.cover_date_ar", "kind": "text"}' hx-trigger="change" hx-swap="none"></label>
+    <label>Cover photo (photo number; empty = the first Hero)<input name="value" value="{{ cover_photo }}" hx-post="/api/text" hx-vals='{"key": "cover.photo"}' hx-trigger="change" hx-swap="none"></label>
+    {% if !cover_photo.is_empty() %}<img class="cover-thumb" src="/img/{{ cover_photo }}/m" alt="">{% endif %}
+  </fieldset>
+  <fieldset><legend>Colours</legend>
+    <div class="swatches">
+    {% for (key, label, value) in colors %}
+      <label class="swatch"><input type="color" name="value" value="{{ value }}" hx-post="/api/settings" hx-vals='{"key": "design.{{ key }}", "kind": "text"}' hx-trigger="change" hx-swap="none">{{ label }}</label>
+    {% endfor %}
+    </div>
+    <p class="small-print">Photos stay on calm white pages; the colours go to titles, stripes, dots and page numbers.</p>
+  </fieldset>
+  <fieldset><legend>Fonts</legend>
+    <label>Titles
+      <select name="value" hx-post="/api/settings" hx-vals='{"key": "design.title_font", "kind": "text"}' hx-swap="none" onchange="document.documentElement.style.setProperty('--title-font', `'${this.value}'`)">
+        {% for f in fonts %}<option {% if design.title_font == *f %}selected{% endif %}>{{ f }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="font-samples">{% for f in fonts %}<span style="font-family: '{{ f }}'">{{ f }}: Le cocktail</span>{% endfor %}</div>
+    <label>Arabic titles
+      <select name="value" hx-post="/api/settings" hx-vals='{"key": "design.arabic_font", "kind": "text"}' hx-swap="none" onchange="document.documentElement.style.setProperty('--arabic-font', `'${this.value}'`)">
+        {% for f in arabic_fonts %}<option {% if design.arabic_font == *f %}selected{% endif %}>{{ f }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="font-samples" dir="rtl">{% for f in arabic_fonts %}<span style="font-family: '{{ f }}'">الكوكتيل · {{ f }}</span>{% endfor %}</div>
+  </fieldset>
+</div>
+<script>
+function preview(input) {
+  const row = input.closest(".text-row");
+  row.querySelector(input.classList.contains("fr") ? ".tp-fr" : ".tp-ar").textContent = input.value;
+}
+</script>
+{% endblock %}

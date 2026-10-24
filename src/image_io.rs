@@ -1,8 +1,69 @@
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use image::{DynamicImage, GrayImage, ImageDecoder, ImageReader, RgbImage, RgbaImage};
-use libvips::{VipsImage, ops};
+use libvips::{VipsApp, VipsImage, ops};
+
+static VIPS: OnceLock<VipsApp> = OnceLock::new();
+
+pub fn vips() -> &'static VipsApp {
+    VIPS.get_or_init(|| {
+        let app = VipsApp::default("iris").expect("failed to initialize libvips");
+        app.concurrency_set(2);
+        app.cache_set_max_mem(64 * 1024 * 1024);
+        app
+    })
+}
+
+/// The two WebP proxies every Photo gets: grid thumbnails and previews/analysis.
+pub const GRID_SIZE: u32 = 400;
+pub const PREVIEW_SIZE: u32 = 1200;
+
+pub fn proxy_path(webp_dir: &Path, blake3_hash: &str, size: u32) -> PathBuf {
+    webp_dir.join(format!("{}_{size}.webp", &blake3_hash[..32.min(blake3_hash.len())]))
+}
+
+/// An upright, sRGB, downscaled copy of an encoded image (JPEG, HEIC, …).
+pub fn thumbnail_from_buffer(bytes: &[u8], max_side: u32) -> Result<VipsImage> {
+    let _ = vips();
+    let side = i32::try_from(max_side).unwrap_or(i32::MAX);
+    let options = ops::ThumbnailBufferOptions {
+        height: side,
+        size: ops::Size::Down,
+        input_profile: "srgb".into(),
+        output_profile: "srgb".into(),
+        ..Default::default()
+    };
+    ops::thumbnail_buffer_with_opts(bytes, side, &options)
+        .and_then(|image| ops::colourspace(&image, ops::Interpretation::Srgb))
+        .and_then(|image| ops::cast(&image, ops::BandFormat::Uchar))
+        .map_err(|error| vips_error(&error))
+}
+
+/// Writes a WebP atomically (temp file + rename), without metadata.
+pub fn save_webp(image: &VipsImage, path: &Path, quality: i32) -> Result<()> {
+    let parent = path.parent().context("WebP path has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_extension(format!("{}-{unique}.tmp.webp", std::process::id()));
+    let options = ops::WebpsaveOptions {
+        q: quality,
+        smart_subsample: true,
+        keep: ops::ForeignKeep::None,
+        ..Default::default()
+    };
+    ops::webpsave_with_opts(image, &temp.to_string_lossy(), &options).map_err(|error| vips_error(&error))?;
+    std::fs::rename(&temp, path)?;
+    Ok(())
+}
+
+pub fn vips_dimensions(image: &VipsImage) -> (u32, u32) {
+    (image.get_width().max(0) as u32, image.get_height().max(0) as u32)
+}
 
 /// Decodes the full-size image, upright (EXIF orientation applied).
 /// Only for final rendering: analysis uses [`open_for_analysis`].
@@ -24,7 +85,7 @@ pub fn open_image(path: &Path) -> Result<DynamicImage> {
 /// Decodes an upright, downscaled copy (longest side ≤ `max_side`) with libvips, which
 /// shrinks JPEGs on load and handles HEIC: fast and light on memory.
 pub fn open_for_analysis(path: &Path, max_side: u32) -> Result<DynamicImage> {
-    let _ = crate::webp_cache::vips();
+    let _ = vips();
     let side = i32::try_from(max_side).unwrap_or(i32::MAX);
     let options = ops::ThumbnailOptions {
         height: side,
@@ -43,13 +104,13 @@ pub fn open_for_analysis(path: &Path, max_side: u32) -> Result<DynamicImage> {
     vips_to_dynamic(&image).with_context(|| format!("unexpected pixel layout in {}", path.display()))
 }
 
-fn vips_error(error: &libvips::error::Error) -> anyhow::Error {
-    let detail = crate::webp_cache::vips().error_buffer().unwrap_or_default().trim().to_string();
-    crate::webp_cache::vips().error_clear();
+pub fn vips_error(error: &libvips::error::Error) -> anyhow::Error {
+    let detail = vips().error_buffer().unwrap_or_default().trim().to_string();
+    vips().error_clear();
     anyhow!("{error:?}: {detail}")
 }
 
-fn vips_to_dynamic(image: &VipsImage) -> Result<DynamicImage> {
+pub fn vips_to_dynamic(image: &VipsImage) -> Result<DynamicImage> {
     let width = u32::try_from(image.get_width())?;
     let height = u32::try_from(image.get_height())?;
     let pixels = image.image_write_to_memory();
@@ -71,7 +132,7 @@ pub fn is_supported_image_path(path: &Path) -> bool {
             .and_then(|ext| ext.to_str())
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("jpg" | "jpeg" | "png" | "heic" | "webp")
+        Some("jpg" | "jpeg" | "png" | "heic" | "heif" | "webp")
     )
 }
 
@@ -86,7 +147,7 @@ pub fn ensure_supported(path: &Path) -> Result<()> {
 fn is_heic(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif"))
 }
 
 #[cfg(test)]

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Album{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>The album</h1>
+    <p class="lead">Every Spread, in order. Click one to edit it. A padlock means your edits are kept when the album is rebuilt; unlocked Spreads can change.</p>
+  </div>
+  <div class="toolbar">
+    {% if building %}<span class="chip">Building…</span>{% else %}
+    <button class="{% if stale.is_some() || !has_album %}primary{% else %}ghost{% endif %}" hx-post="/api/stages/select/run" hx-swap="none">{% if has_album %}Rebuild the album{% else %}Build the album{% endif %}</button>
+    {% endif %}
+  </div>
+</section>
+<nav class="tabs">
+  {% for e in editions %}<a href="/album?edition={{ e.key }}" class="{% if e.key == edition.key %}active{% endif %}">{{ e.name }}</a>{% endfor %}
+</nav>
+<div hx-get="/album?edition={{ edition.key }}" hx-trigger="sse:changed[event.data=='select']" hx-select="#album-body" hx-target="#album-body" hx-swap="outerHTML"></div>
+<div id="album-body">
+{% if !has_album %}
+  <div class="empty">
+    <h2>No album yet</h2>
+    <p>Run the indexing steps, name the bride and groom on the People page, then build the album.</p>
+  </div>
+{% else %}
+  <div class="facts">
+    <div class="fact {% if pages != target %}fact-warn{% endif %}"><b>{{ pages }}</b><span>pages (target {{ target }})</span></div>
+    {% if let Some(share) = couple_share %}<div class="fact {% if *share < couple_target %}fact-warn{% endif %}"><b>{{ "{:.0}"|format(share * 100.0) }} %</b><span>of Shots show the Couple (target {{ "{:.0}"|format(couple_target * 100.0) }} %)</span></div>{% endif %}
+    <div class="fact {% if !unmet.is_empty() %}fact-warn{% endif %}"><b>{{ unmet.len() }}</b><span>Quotas not met</span></div>
+    {% if let Some(reason) = stale %}<div class="fact fact-warn"><b>Rebuild</b><span>{{ reason }}</span></div>{% endif %}
+  </div>
+  {% if !unmet.is_empty() %}
+  <p class="note">Quotas not met: {% for (name, quota, reached) in unmet %}<b>{{ name }}</b> {{ reached }}/{{ quota }}{% if !loop.last %} · {% endif %}{% endfor %}. Pin photos of them, or lower the Quota.</p>
+  {% endif %}
+  {% for section in sections %}
+  <section class="chapter-section">
+    <header>
+      <h2>{{ loop.index }}. {{ section.title }}</h2>
+      <span class="muted">{{ section.core_count }} Spreads</span>
+      <span class="stepper">
+        <button class="small ghost" hx-post="/api/spread/0/edit" hx-vals='{"op": "chapter_spreads", "chapter": "{{ section.key }}", "count": {% if section.core_count > 0 %}{{ section.core_count - 1 }}{% else %}0{% endif %}}' hx-swap="none" title="One Spread less (rebuild to apply)">−</button>
+        <button class="small ghost" hx-post="/api/spread/0/edit" hx-vals='{"op": "chapter_spreads", "chapter": "{{ section.key }}", "count": {{ section.core_count + 1 }}}' hx-swap="none" title="One Spread more (rebuild to apply)">+</button>
+      </span>
+    </header>
+    <div class="spreads" data-chapter="{{ section.key }}">
+      {% for card in section.spreads %}
+      <a class="spread-card{% if card.locked %} locked{% endif %}" href="/spread/{{ card.uid }}?edition={{ edition.key }}" data-uid="{{ card.uid }}">
+        <img src="/preview/{{ card.uid }}?edition={{ edition.key }}" loading="lazy" alt="">
+        <span class="spread-meta">
+          <span>p. {{ card.pages.0 }}–{{ card.pages.1 }} · {{ card.photos }} photos</span>
+          {% if card.kind == iris_core::model::SpreadKind::Group %}<span class="chip">{{ card.group }}</span>{% endif %}
+          {% if card.warnings > 0 %}<span class="chip chip-bad">{{ card.warnings }} ⚠</span>{% endif %}
+          <span class="lock" title="{% if card.locked %}Locked{% else %}Not locked{% endif %}">{% if card.locked %}🔒{% else %}🔓{% endif %}</span>
+        </span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+{% endif %}
+</div>
+<script>
+htmx.onLoad((root) => {
+  root.querySelectorAll(".spreads").forEach((list) => {
+    if (list._sortable) return;
+    list._sortable = Sortable.create(list, {
+      animation: 150, draggable: ".spread-card",
+      onEnd: (event) => {
+        if (event.oldIndex === event.newIndex) return;
+        const uid = event.item.dataset.uid;
+        htmx.ajax("POST", `/api/spread/${uid}/edit`, { swap: "none", values: { op: "move", position: event.newIndex, edition: "{{ edition.key }}" } })
+          .then(() => location.reload());
+      },
+    });
+  });
+});
+</script>
+{% endblock %}

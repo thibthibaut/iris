@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}People{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>Who's who</h1>
+    <p class="lead">Name the people you care about, mark the bride and groom, and drag people into the families: each family gets its own Spread in its Edition. A Quota asks the album to show someone at least that many times.</p>
+  </div>
+</section>
+<div id="board" hx-get="/api/people" hx-trigger="sse:changed[event.data=='cluster']">
+  {{ board|safe }}
+</div>
+<script>
+function initPeople(root) {
+  root.querySelectorAll("[data-person-list]").forEach((list) => {
+    if (list._sortable) return;
+    list._sortable = Sortable.create(list, {
+      group: { name: "people", pull: "clone", put: false },
+      sort: false, draggable: ".person", handle: ".face-handle",
+    });
+  });
+  root.querySelectorAll("[data-group]").forEach((zone) => {
+    if (zone._sortable) return;
+    zone._sortable = Sortable.create(zone, {
+      group: { name: "people", pull: false, put: true }, sort: false,
+      onAdd: (event) => {
+        const anchor = event.item.dataset.anchor;
+        event.item.remove();
+        htmx.ajax("POST", `/api/people/${anchor}/group`, { target: "#board", values: { group: zone.dataset.group, member: "true" } });
+      },
+    });
+  });
+}
+function mergeSelected() {
+  const ids = [...document.querySelectorAll(".merge-box:checked")].map((box) => box.value);
+  if (ids.length < 2) { toast("Tick at least two people to merge"); return; }
+  htmx.ajax("POST", `/api/people/${ids[0]}/merge`, { target: "#board", values: { ids: ids.join(",") } });
+}
+htmx.onLoad((element) => initPeople(element));
+</script>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Chapters{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>The day, Chapter by Chapter</h1>
+    <p class="lead">Each strip is one moment, in order. Guest photos are placed by what they look like: the ones outlined in yellow are unsure ({{ total_to_check }}). Drag a photo onto another strip to move it; your moves are kept when the Chapters are recomputed.</p>
+  </div>
+  <div class="toolbar">
+    <button class="ghost" hx-post="/api/stages/chapters/run" hx-swap="none">Recompute Chapters</button>
+  </div>
+</section>
+<div class="legend"><span class="tile-mini guest"></span> guest photo <span class="tile-mini uncertain"></span> unsure <span class="tile-mini moved"></span> moved by you <span class="tile-mini excluded"></span> rejected or banned</div>
+{% for strip in strips %}
+<section class="strip" id="strip-{{ strip.key }}">
+  <header>
+    <h2>{{ loop.index }}. {{ strip.title }}</h2>
+    <span class="muted">{{ strip.tiles.len() }} shots{% if strip.to_check > 0 %} · <span class="chip chip-warn">{{ strip.to_check }} unsure</span>{% endif %}</span>
+  </header>
+  <div class="strip-row" data-chapter="{{ strip.key }}">
+    {% for t in strip.tiles %}
+    <div class="strip-tile{% if t.guest %} guest{% endif %}{% if t.uncertain %} uncertain{% endif %}{% if t.moved %} moved{% endif %}{% if t.excluded %} excluded{% endif %}" data-photo="{{ t.id }}" title="{{ t.hint }}">
+      <img src="/img/{{ t.id }}/s" loading="lazy" alt="" hx-get="/photos/{{ t.id }}" hx-target="#drawer">
+      {% if t.copies > 1 %}<span class="tag">×{{ t.copies }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+<script>
+htmx.onLoad((root) => {
+  root.querySelectorAll(".strip-row").forEach((row) => {
+    if (row._sortable) return;
+    row._sortable = Sortable.create(row, {
+      group: "chapters", sort: false, animation: 120,
+      onAdd: (event) => {
+        const photo = event.item.dataset.photo;
+        event.item.classList.add("moved");
+        event.item.classList.remove("uncertain");
+        htmx.ajax("POST", `/api/photos/${photo}/chapter`, { swap: "none", values: { chapter: row.dataset.chapter } });
+      },
+    });
+  });
+});
+</script>
+{% endblock %}

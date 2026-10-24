@@ -1,0 +1,70 @@
+<div id="editor" data-uid="{{ uid }}" data-edition="{{ edition }}" data-locked="{{ locked }}" data-prev="{% if let Some(p) = prev %}{{ p }}{% endif %}" data-next="{% if let Some(n) = next %}{{ n }}{% endif %}">
+  <section class="page-head">
+    <div>
+      <h1>{{ chapter }}{% if !group.is_empty() %} · {{ group }}{% endif %}</h1>
+      <p class="lead">{{ position }}. Drag a photo onto another to swap them, or a photo from the tray onto a Slot to replace it (or onto a page to add it). ←/→ next Spread, B ban, P pin, L lock, ⌫ take out.</p>
+    </div>
+    <div class="toolbar">
+      {% if let Some(p) = prev %}<a class="button ghost" href="/spread/{{ p }}?edition={{ edition }}">← Previous</a>{% endif %}
+      <a class="button ghost" href="/album?edition={{ edition }}">All Spreads</a>
+      {% if let Some(n) = next %}<a class="button ghost" href="/spread/{{ n }}?edition={{ edition }}">Next →</a>{% endif %}
+    </div>
+  </section>
+  <div class="editor-layout">
+    <div>
+      <div class="spread-stage">
+        <img class="spread-preview" src="/preview/{{ uid }}?edition={{ edition }}&v={{ version }}" alt="">
+        <div class="page-drop left" data-page="0"></div>
+        <div class="page-drop right" data-page="1"></div>
+        {% for slot in slots %}
+        <div class="slot" data-photo="{{ slot.photo }}" data-drag="slot:{{ slot.photo }}" draggable="true" onclick="selectSlot(this)" title="{{ slot.name }}"
+             style="left: {{ slot.left }}%; top: {{ slot.top }}%; width: {{ slot.width }}%; height: {{ slot.height }}%">
+          {% if slot.pinned %}<span class="slot-badge">📌</span>{% endif %}{% if slot.hero %}<span class="slot-badge">★</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if !warnings.is_empty() %}
+      <ul class="warnings">{% for w in warnings %}<li>⚠ {{ w }}</li>{% endfor %}</ul>
+      {% endif %}
+      <div class="slot-tools">
+        <span class="muted">Selected photo:</span>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('remove')">Take out</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('ban')">Ban</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('pin')">Pin</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('hero')">Hero</button>
+        <span class="sep"></span>
+        <span class="muted">Crop:</span>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {zoom: 1.15})" title="Zoom in">＋</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {zoom: 0.87})" title="Zoom out">－</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dx: -0.1})">←</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dy: -0.1})">↑</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dy: 0.1})">↓</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dx: 0.1})">→</button>
+        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop')" title="Face-aware crop">Reset</button>
+      </div>
+    </div>
+    <aside class="editor-side">
+      <div class="side-box">
+        <h3>{% if locked %}🔒 Locked{% else %}🔓 Not locked{% endif %}</h3>
+        <p class="small-print">{% if locked %}Kept as it is when the album is rebuilt.{% else %}Any edit locks it. Until then a rebuild may change it.{% endif %}</p>
+        <button class="ghost small" onclick="act('{% if locked %}unlock{% else %}lock{% endif %}')">{% if locked %}Unlock{% else %}Lock{% endif %}</button>
+        <button class="ghost small" onclick="act('relayout')">Re-lay out</button>
+        {% if kind == iris_core::model::SpreadKind::Core %}<button class="ghost small" onclick="act('title')">{% if title %}Remove title{% else %}Add Chapter title{% endif %}</button>{% endif %}
+      </div>
+      {% for page in 0..2 %}
+      {% if !options[page].is_empty() %}
+      <div class="side-box">
+        <h3>{% if page == 0 %}Left{% else %}Right{% endif %} page</h3>
+        <p class="small-print">Now: {{ templates[page] }}</p>
+        <div class="template-options">
+          {% for (template, label, current) in options[page] %}
+          <button class="ghost small{% if *current %} current{% endif %}" onclick="act('template', {page: {{ page }}, template: '{{ template }}'})">{{ label }}</button>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+      <div id="tray" class="side-box"><p class="small-print">Click a photo on the Spread to see alternatives.</p></div>
+    </aside>
+  </div>
+</div>

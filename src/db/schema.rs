@@ -4,6 +4,7 @@ use rusqlite::Connection;
 pub const CLIP_EMBEDDING_DIMENSIONS: usize = 768;
 pub const FACE_EMBEDDING_DIMENSIONS: usize = 512;
 
+/// Fresh schema for the album. No migrations from older iris databases.
 pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
@@ -13,234 +14,171 @@ CREATE TABLE IF NOT EXISTS scan_runs (
   finished_at_unix INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS app_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS photos (
   id INTEGER PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
-  blake3_hash TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  source TEXT NOT NULL,                -- 'photographer' | 'guest'
+  source_folder TEXT NOT NULL DEFAULT '',
   file_size INTEGER NOT NULL,
   modified_at_unix INTEGER NOT NULL,
   missing INTEGER NOT NULL DEFAULT 0,
   last_seen_scan_id INTEGER,
-  last_scanned_at_unix INTEGER,
-  taken_at TEXT,
-  gps_lat REAL,
-  gps_lon REAL,
-  geo_city TEXT,
-  geo_region TEXT,
-  geo_country TEXT,
-  geo_country_code TEXT,
-  geo_label TEXT,
+  sent_at_utc INTEGER,                 -- guest file-name send time (upper bound on capture)
+  sequence INTEGER,                    -- camera file number (DSC_9562 -> 9562)
+  -- ingest
+  blake3_hash TEXT,
+  format TEXT,
   camera_model TEXT,
-  orientation INTEGER,
-  width INTEGER,
+  width INTEGER,                       -- after orientation
   height INTEGER,
-  blur_score REAL,
+  taken_at_utc INTEGER,
+  taken_at_source TEXT NOT NULL DEFAULT 'none',
+  jpeg_q_est REAL,
+  -- quality
+  tenengrad REAL,
   exposure_score REAL,
   screenshot_score REAL,
-  quality_score REAL,
-  face_status TEXT NOT NULL DEFAULT 'pending',
-  ocr_status TEXT NOT NULL DEFAULT 'pending',
-  ocr_raw_text TEXT,
-  ocr_cleaned_text TEXT,
-  ocr_confidence REAL
+  phash INTEGER,
+  clip_aesthetic REAL,
+  clip_screenshot REAL,
+  -- shots and chapters
+  shot_id INTEGER,
+  chapter TEXT,
+  chapter_prob REAL,
+  chapter_margin REAL,
+  chapter_source TEXT,
+  chapter_order REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_photos_missing ON photos(missing);
 CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(blake3_hash);
-CREATE INDEX IF NOT EXISTS idx_photos_ocr_status ON photos(ocr_status);
+CREATE INDEX IF NOT EXISTS idx_photos_shot ON photos(shot_id);
+CREATE INDEX IF NOT EXISTS idx_photos_chapter ON photos(chapter);
+
+-- Per-Photo progress of each per-Photo stage, at a given processor version.
+CREATE TABLE IF NOT EXISTS photo_stages (
+  photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  ok INTEGER NOT NULL,
+  error TEXT,
+  PRIMARY KEY (photo_id, stage)
+);
+
+-- Last successful run of each stage.
+CREATE TABLE IF NOT EXISTS stage_runs (
+  stage TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  settings_hash TEXT NOT NULL DEFAULT '',
+  finished_at_ms INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS faces (
   id INTEGER PRIMARY KEY,
   photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
   face_index INTEGER NOT NULL,
+  -- bbox in the upright original's pixel frame
   bbox_x1 REAL NOT NULL,
   bbox_y1 REAL NOT NULL,
   bbox_x2 REAL NOT NULL,
   bbox_y2 REAL NOT NULL,
   detection_score REAL NOT NULL,
   landmarks_json TEXT,
-  gender TEXT,
-  age INTEGER,
+  sharpness REAL,
   UNIQUE(photo_id, face_index)
 );
 
 CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces(photo_id);
 
-CREATE TABLE IF NOT EXISTS persons (
+-- Raw face clusters from the last cluster run. Persons as the user sees them are these
+-- clusters with the People Overrides replayed on top (see album::people).
+CREATE TABLE IF NOT EXISTS clusters (
   id INTEGER PRIMARY KEY,
-  display_name TEXT,
-  created_at_unix INTEGER NOT NULL,
-  updated_at_unix INTEGER NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1,
   representative_face_id INTEGER REFERENCES faces(id) ON DELETE SET NULL,
-  centroid BLOB NOT NULL,
-  face_count INTEGER NOT NULL DEFAULT 0,
-  last_seen_cluster_run_id INTEGER
+  centroid BLOB NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_persons_active ON persons(active);
+CREATE TABLE IF NOT EXISTS face_clusters (
+  face_id INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
+  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+  distance REAL NOT NULL,
+  soft INTEGER NOT NULL DEFAULT 0
+);
 
-CREATE TABLE IF NOT EXISTS face_cluster_runs (
+CREATE INDEX IF NOT EXISTS idx_face_clusters_cluster ON face_clusters(cluster_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS overrides (
   id INTEGER PRIMARY KEY,
-  started_at_unix INTEGER NOT NULL,
-  finished_at_unix INTEGER,
-  status TEXT NOT NULL,
-  algorithm TEXT NOT NULL,
-  min_cluster_size INTEGER NOT NULL,
-  min_samples INTEGER NOT NULL,
-  match_threshold REAL NOT NULL,
-  input_faces INTEGER NOT NULL DEFAULT 0,
-  clustered_faces INTEGER NOT NULL DEFAULT 0,
-  noise_faces INTEGER NOT NULL DEFAULT 0,
-  cluster_count INTEGER NOT NULL DEFAULT 0,
+  ts_ms INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  label TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL,                -- queued | running | succeeded | failed | cancelled
+  queued_at_ms INTEGER NOT NULL,
+  started_at_ms INTEGER,
+  finished_at_ms INTEGER,
+  done INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
   error TEXT
 );
 
-CREATE TABLE IF NOT EXISTS face_person_assignments (
-  face_id INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
-  person_id INTEGER NOT NULL REFERENCES persons(id),
-  cluster_run_id INTEGER NOT NULL REFERENCES face_cluster_runs(id),
-  cluster_label INTEGER NOT NULL,
-  distance_to_centroid REAL,
-  assigned_at_unix INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS job_items (
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  photo_id INTEGER NOT NULL,
+  reason TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_face_person_assignments_person_id ON face_person_assignments(person_id);
-CREATE INDEX IF NOT EXISTS idx_face_person_assignments_cluster_run_id ON face_person_assignments(cluster_run_id);
+-- Generated state (the Proposal) and other derived blobs.
+CREATE TABLE IF NOT EXISTS blobs (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS exports (
+  id INTEGER PRIMARY KEY,
+  edition TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  manifest_json TEXT NOT NULL,
+  UNIQUE(edition, version)
+);
+
+CREATE TABLE IF NOT EXISTS vlm_cache (
+  blake3_hash TEXT NOT NULL,
+  task TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  response_json TEXT NOT NULL,
+  PRIMARY KEY (blake3_hash, task, prompt_version)
+);
 "#,
     )?;
-
-    drop_obsolete_timestamp_columns(conn)?;
-    add_missing_geo_columns(conn)?;
-    add_missing_face_columns(conn)?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_photos_face_status ON photos(face_status)",
-        [],
-    )?;
-
-    ensure_embedding_tables(conn)?;
-
-    Ok(())
-}
-
-fn add_missing_face_columns(conn: &Connection) -> Result<()> {
-    if !column_exists(conn, "photos", "face_status")? {
-        conn.execute(
-            "ALTER TABLE photos ADD COLUMN face_status TEXT NOT NULL DEFAULT 'pending'",
-            [],
-        )?;
-    }
-
-    Ok(())
-}
-
-fn add_missing_geo_columns(conn: &Connection) -> Result<()> {
-    for (column, column_type) in [
-        ("geo_city", "TEXT"),
-        ("geo_region", "TEXT"),
-        ("geo_country", "TEXT"),
-        ("geo_country_code", "TEXT"),
-        ("geo_label", "TEXT"),
-    ] {
-        if !column_exists(conn, "photos", column)? {
-            let sql = format!("ALTER TABLE photos ADD COLUMN {column} {column_type}");
-            conn.execute(&sql, [])?;
-        }
-    }
-
-    Ok(())
-}
-
-fn drop_obsolete_timestamp_columns(conn: &Connection) -> Result<()> {
-    for column in [
-        "metadata_extracted_at_unix",
-        "quality_extracted_at_unix",
-        "image_embedding_done_at_unix",
-        "ocr_text_embedding_done_at_unix",
-    ] {
-        if column_exists(conn, "photos", column)? {
-            let sql = format!("ALTER TABLE photos DROP COLUMN {column}");
-            conn.execute(&sql, [])?;
-        }
-    }
-
-    Ok(())
-}
-
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
-
-    for existing_column in columns {
-        if existing_column? == column {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-fn ensure_embedding_tables(conn: &Connection) -> Result<()> {
-    let configured_dimension = conn
-        .query_row(
-            "SELECT value FROM app_meta WHERE key = 'clip_embedding_dimensions'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .or_else(|| {
-            conn.query_row(
-                "SELECT value FROM app_meta WHERE key = 'embedding_dimensions'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .and_then(|value| value.parse::<usize>().ok());
-
-    if configured_dimension != Some(CLIP_EMBEDDING_DIMENSIONS) {
-        conn.execute_batch(
-            r#"
-DROP TABLE IF EXISTS vec_image_embeddings;
-DROP TABLE IF EXISTS vec_ocr_text_embeddings;
-"#,
-        )?;
-    }
 
     let image_sql = format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_image_embeddings USING vec0(embedding float[{CLIP_EMBEDDING_DIMENSIONS}])"
     );
     conn.execute(&image_sql, [])
         .context("failed to initialize sqlite-vec image table")?;
-
-    let text_sql = format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_ocr_text_embeddings USING vec0(embedding float[{CLIP_EMBEDDING_DIMENSIONS}])"
-    );
-    conn.execute(&text_sql, [])
-        .context("failed to initialize sqlite-vec OCR text table")?;
-
     let face_sql = format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_face_embeddings USING vec0(embedding float[{FACE_EMBEDDING_DIMENSIONS}])"
     );
     conn.execute(&face_sql, [])
         .context("failed to initialize sqlite-vec face table")?;
-
-    conn.execute(
-        r#"
-INSERT INTO app_meta(key, value) VALUES ('clip_embedding_dimensions', ?)
-ON CONFLICT(key) DO UPDATE SET value = excluded.value
-"#,
-        [CLIP_EMBEDDING_DIMENSIONS.to_string()],
-    )?;
-    conn.execute(
-        "DELETE FROM app_meta WHERE key = 'embedding_dimensions'",
-        [],
-    )?;
 
     Ok(())
 }

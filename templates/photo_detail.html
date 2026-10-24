@@ -1,0 +1,45 @@
+<div class="drawer-head">
+  <h2 class="ellipsis">{{ tile.photo.file_name }}</h2>
+  <button class="icon" onclick="closeDrawer()">✕</button>
+</div>
+<img class="detail-img" src="/img/{{ tile.photo.id }}/m" alt="">
+<div class="detail-actions">
+  <button class="{% if tile.status == "pinned" %}primary{% else %}ghost{% endif %}" hx-post="/api/photos/{{ tile.photo.id }}/pin" hx-target="#drawer" title="Must be in the album">📌 {% if tile.status == "pinned" %}Pinned{% else %}Pin{% endif %}</button>
+  <button class="{% if tile.status == "banned" %}danger{% else %}ghost{% endif %}" hx-post="/api/photos/{{ tile.photo.id }}/ban" hx-target="#drawer" title="Never in the album">⦸ {% if tile.status == "banned" %}Banned{% else %}Ban{% endif %}</button>
+  <button class="{% if is_hero %}primary{% else %}ghost{% endif %}" hx-post="/api/photos/{{ tile.photo.id }}/hero" hx-target="#drawer" title="A whole page for this photo">★ Hero</button>
+  <form hx-post="/api/photos/{{ tile.photo.id }}/chapter" hx-target="#drawer" hx-trigger="change">
+    <select name="chapter">
+      <option value="">Move to Chapter…</option>
+      {% for (key, title) in chapters %}<option value="{{ key }}">{{ title }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+{% if tile.status == "rejected" %}<p class="note bad">Rejected: {{ tile.status_label }}. Pin it to use it anyway.</p>{% endif %}
+<dl class="facts-list">
+  <dt>Source</dt><dd>{% if let Some(source) = tile.photo.source %}{{ source.as_str() }}{% endif %}{% if !tile.photo.source_folder.is_empty() %} · {{ tile.photo.source_folder }}{% endif %}</dd>
+  <dt>Chapter</dt><dd>{{ chapter_title }}{% if let Some(src) = tile.photo.chapter_source %} <span class="muted">({{ src }}{% if let Some(p) = tile.photo.chapter_prob %}, {{ "{:.0}"|format(p * 100.0) }} %{% endif %})</span>{% endif %}</dd>
+  {% if !taken.is_empty() %}<dt>Taken</dt><dd>{{ taken }}</dd>{% endif %}
+  {% if !sent.is_empty() %}<dt>Sent</dt><dd>{{ sent }} <span class="muted">(taken before)</span></dd>{% endif %}
+  {% if let Some(w) = tile.photo.width %}<dt>Size</dt><dd>{{ w }} × {{ tile.photo.height.unwrap_or(0) }}{% if let Some(mm) = tile.photo.max_print_mm() %} · prints up to {{ "{:.0}"|format(mm) }} mm at 250 ppi{% endif %}</dd>{% endif %}
+  {% if let Some(camera) = tile.photo.camera_model %}<dt>Camera</dt><dd>{{ camera }}</dd>{% endif %}
+  {% if let Some(q) = tile.photo.jpeg_q_est %}<dt>JPEG quality</dt><dd>≈ {{ "{:.0}"|format(q) }}</dd>{% endif %}
+  {% if let Some(e) = evaluation %}<dt>Quality</dt><dd>{{ "{:.2}"|format(e.quality) }}{% if let Some(a) = tile.photo.clip_aesthetic %} · aesthetic {{ "{:.2}"|format(a) }}{% endif %}{% if let Some(f) = e.face_sharpness %} · faces sharp {{ "{:.2}"|format(f) }}{% endif %}</dd>{% endif %}
+</dl>
+{% if !faces.is_empty() %}
+<h3>Faces</h3>
+<div class="face-row">
+  {% for face in faces %}
+  <a class="face{% if face.soft %} soft{% endif %}{% if face.small %} small-face{% endif %}" {% if let Some(anchor) = face.anchor %}href="/people/{{ anchor }}"{% endif %} title="sharpness {{ face.sharpness }}">
+    <img src="/face/{{ face.id }}" loading="lazy" alt="">
+    <span>{{ face.name }}{% if face.soft %} ?{% endif %}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% if !shot.is_empty() %}
+<h3>Same Shot <small class="muted">({{ shot.len() + 1 }} copies or burst frames; one is used)</small></h3>
+<div class="mini-grid">
+  {% for other in shot %}<img src="/img/{{ other.id }}/s" hx-get="/photos/{{ other.id }}" hx-target="#drawer" title="{{ other.file_name }}">{% endfor %}
+</div>
+<button class="ghost small" hx-post="/api/photos/{{ tile.photo.id }}/split-shot" hx-target="#drawer">Take this photo out of the Shot</button>
+{% endif %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Index{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>Index the photos</h1>
+    <p class="lead">Each step reads the photos once and remembers what it did. Run them in order; you can keep working on other pages while they run.</p>
+  </div>
+  <a class="button ghost" href="/inventory">Inventory report →</a>
+</section>
+<div id="cards" hx-get="/api/pipeline" hx-trigger="sse:changed, every 4s [document.querySelector('.jobbar.running')]">
+  {{ cards|safe }}
+</div>
+{% endblock %}

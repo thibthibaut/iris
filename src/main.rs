@@ -1,32 +1,25 @@
-mod app;
-mod capture;
 mod cli;
+mod album;
 mod config;
 mod db;
-mod hash;
 mod image_io;
-mod models;
-mod processors;
-mod text;
-mod traits;
+mod jobs;
+mod render;
+mod stages;
+mod state;
 mod web;
-mod webp_cache;
 
 use anyhow::Result;
 use clap::Parser;
 use comfy_table::Table;
+use iris_core::decisions::Decisions;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use crate::app::AppContext;
-use crate::cli::{Cli, Command};
-use crate::config::Config;
-use crate::db::Database;
-use crate::processors::{
-    ClusterFacesProcessor, DiscoveryProcessor, FaceEmbeddingProcessor, ImageEmbeddingProcessor,
-    LazyOcrProcessor, MetadataProcessor, OcrTextEmbeddingProcessor, QualityProcessor,
-    ReverseGeoProcessor, WebpCacheProcessor, run_index,
+use crate::{
+    cli::{Cli, Command},
+    config::Config,
+    jobs::{CancelToken, StageCtx, TerminalSink, run_stage, stage_status},
 };
-use crate::traits::BatchProcessor;
 
 fn main() -> Result<()> {
     fmt()
@@ -35,97 +28,71 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let config = Config::from_path(&cli.config)?;
-    let db = Database::open(&config.database_path)?;
-    let ctx = AppContext::new(config, db, cli.limit, cli.limit);
 
     match cli.command {
-        Command::Scan => DiscoveryProcessor.run(&ctx),
-        Command::Metadata => MetadataProcessor.run(&ctx),
-        Command::Geo => ReverseGeoProcessor.run(&ctx),
-        Command::Quality => QualityProcessor.run(&ctx),
-        Command::Embed => {
-            ImageEmbeddingProcessor.run(&ctx)?;
-            OcrTextEmbeddingProcessor.run(&ctx)
-        }
-        Command::Faces => FaceEmbeddingProcessor.run(&ctx),
-        Command::ClusterFaces => ClusterFacesProcessor.run(&ctx),
-        Command::Ocr => LazyOcrProcessor.run(&ctx),
-        Command::WebpCache => WebpCacheProcessor.run(&ctx),
-        Command::ShowDb => show_db(&ctx),
-        Command::Verify => verify(&ctx),
         Command::Serve { host, port } => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(web::serve(ctx.config, host, port))
+            runtime.block_on(web::serve(config, host, port))
         }
-        Command::Index => run_index(&ctx),
+        Command::Stages => print_stages(&config),
+        Command::Index => {
+            let ctx = StageCtx::open(&config)?;
+            let all = stages::all();
+            let mut dirty: Vec<&str> = Vec::new();
+            for stage in all.iter().filter(|s| !s.name().starts_with("export:")) {
+                let status = stage_status(&ctx.db, &all, stage.as_ref(), &ctx.decisions)?;
+                if status.stale || stage.deps().iter().any(|dep| dirty.contains(dep)) {
+                    dirty.push(stage.name());
+                    let ctx = StageCtx::open(&config)?;
+                    run_stage(&ctx, stage.as_ref(), &TerminalSink::new(stage.name()), &CancelToken::default())?;
+                }
+            }
+            print_stages(&config)
+        }
+        Command::Run { stages: names } => {
+            let all = stages::all();
+            for name in names {
+                let stage = all
+                    .iter()
+                    .find(|stage| stage.name() == name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown stage {name}"))?;
+                let ctx = StageCtx::open(&config)?;
+                run_stage(&ctx, stage.as_ref(), &TerminalSink::new(stage.name()), &CancelToken::default())?;
+            }
+            Ok(())
+        }
+        Command::Inventory => {
+            let ctx = StageCtx::open(&config)?;
+            for column in ["source", "source_folder", "format", "camera_model", "taken_at_source"] {
+                let mut table = Table::new();
+                table.set_header(vec![column, "photos"]);
+                for (value, count) in ctx.db.count_by(column)? {
+                    table.add_row(vec![value, count.to_string()]);
+                }
+                println!("{table}");
+            }
+            println!("exact duplicate groups: {}", ctx.db.exact_duplicates()?.len());
+            Ok(())
+        }
     }
 }
 
-fn show_db(ctx: &AppContext) -> Result<()> {
-    let rows = ctx.db.photo_rows(20)?;
+fn print_stages(config: &Config) -> Result<()> {
+    let ctx = StageCtx::open(config)?;
+    let decisions = Decisions::replay(&ctx.db.active_overrides()?);
+    let all = stages::all();
     let mut table = Table::new();
-    table.set_header(vec![
-        "id", "missing", "size", "mtime", "quality", "ocr", "imgvec", "txtvec", "faces",
-        "geo", "path",
-    ]);
-
-    for row in rows {
+    table.set_header(vec!["stage", "done", "failed", "pending", "stale"]);
+    for stage in &all {
+        let status = stage_status(&ctx.db, &all, stage.as_ref(), &decisions)?;
         table.add_row(vec![
-            row.id.to_string(),
-            row.missing.to_string(),
-            row.file_size.to_string(),
-            row.modified_at_unix.to_string(),
-            format_optional_f64(row.quality_score),
-            row.ocr_status,
-            embedding_label(row.has_image_embedding).to_string(),
-            embedding_label(row.has_ocr_text_embedding).to_string(),
-            row.face_count.to_string(),
-            row.geo_label.unwrap_or_else(|| "-".to_string()),
-            row.path,
+            status.title.to_string(),
+            status.done.to_string(),
+            status.failed.to_string(),
+            status.pending.to_string(),
+            status.stale_reason.unwrap_or_default(),
         ]);
     }
-
     println!("{table}");
     Ok(())
 }
-
-fn verify(ctx: &AppContext) -> Result<()> {
-    let photos = ctx.db.photos_for_verify(ctx.pending_limit)?;
-    let total = photos.len();
-    let pb = processors::progress::bar(total, "verify");
-    let mut mismatches = 0;
-    let mut failed = 0;
-
-    for photo in photos {
-        match hash::blake3_file(photo.path.as_ref()) {
-            Ok(current_hash) => {
-                if current_hash != photo.blake3_hash {
-                    mismatches += 1;
-                    println!(
-                        "MISMATCH id={} path={} expected={} got={}",
-                        photo.id, photo.path, photo.blake3_hash, current_hash
-                    );
-                }
-            }
-            Err(error) => {
-                failed += 1;
-                eprintln!("FAILED id={} path={} error={}", photo.id, photo.path, error);
-            }
-        }
-        pb.inc(1);
-    }
-
-    pb.finish_and_clear();
-    println!("verify completed: {total} checked, {mismatches} mismatches, {failed} failed");
-    Ok(())
-}
-
-fn format_optional_f64(value: Option<f64>) -> String {
-    value.map_or_else(|| "-".to_string(), |value| format!("{value:.3}"))
-}
-
-fn embedding_label(has_embedding: bool) -> &'static str {
-    if has_embedding { "yes" } else { "-" }
-}
-
-

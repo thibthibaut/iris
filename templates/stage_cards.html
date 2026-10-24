@@ -1,0 +1,53 @@
+<div class="toolbar">
+  {% if any_stale %}
+  <button class="primary" hx-post="/api/run-stale" hx-target="#cards">Run all stale steps</button>
+  {% else %}
+  <span class="ok-badge">✓ Everything is up to date</span>
+  {% endif %}
+  {% if busy %}<button class="ghost" hx-post="/api/cancel-all" hx-target="#cards">Cancel all</button>{% endif %}
+  <span class="spacer"></span>
+  <span class="muted">{{ photo_count }} photos</span>
+  {% for (name, ok) in mounts %}
+  <span class="chip {% if *ok %}chip-ok{% else %}chip-bad{% endif %}">{{ name }} {% if *ok %}mounted{% else %}not mounted{% endif %}</span>
+  {% endfor %}
+</div>
+<ol class="stages">
+  {% for card in stages %}
+  <li class="stage stage-{{ card.state }}">
+    <div class="stage-num">{{ loop.index }}</div>
+    <div class="stage-body">
+      <div class="stage-title">
+        <h3>{{ card.status.title }}</h3>
+        <span class="badge badge-{{ card.state }}">
+          {% if card.state == "running" %}running{% else if card.state == "queued" %}queued{% else if card.state == "failed" %}failed{% else if card.state == "stale" %}to run{% else %}done{% endif %}
+        </span>
+      </div>
+      <p class="muted">{{ card.status.description }}</p>
+      {% if card.status.per_photo %}
+      <div class="progress"><span style="width: {{ card.percent() }}%"></span></div>
+      <p class="small-print">
+        {{ card.status.done }} done
+        {% if card.status.pending > 0 %} · {{ card.status.pending }} to do{% endif %}
+        {% if card.status.failed > 0 %} · <a class="bad" hx-get="/api/stages/{{ card.status.name }}/failures" hx-target="#drawer" hx-on::after-request="openDrawer()">{{ card.status.failed }} failed</a>{% endif %}
+      </p>
+      {% endif %}
+      <p class="small-print">
+        Last run {{ card.last_run }}
+        {% if let Some(reason) = card.status.stale_reason %} · <em>{{ reason }}</em>{% endif %}
+        {% if let Some(message) = card.last_message %}{% if !message.is_empty() %} · {{ message }}{% endif %}{% endif %}
+      </p>
+      {% if let Some(error) = card.last_error %}<pre class="error-box">{{ error }}</pre>{% endif %}
+    </div>
+    <div class="stage-actions">
+      {% if card.state == "running" || card.state == "queued" %}
+      <button class="ghost" hx-post="/api/stages/{{ card.status.name }}/cancel" hx-target="#cards">Cancel</button>
+      {% else %}
+      <button class="{% if card.status.stale %}primary{% else %}ghost{% endif %}" hx-post="/api/stages/{{ card.status.name }}/run" hx-target="#cards">{% if card.status.last_run_ms.is_some() %}Re-run{% else %}Run{% endif %}</button>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+<div class="disk">
+  {% for (name, size) in disk %}<span><b>{{ size }}</b> {{ name }}</span>{% endfor %}
+</div>

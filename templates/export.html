@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>Print-ready PDFs</h1>
+    <p class="lead">One PDF per Edition, for the printer profile <code>{{ printer }}</code>: cover first and last, 3 mm bleed, fonts embedded, every photo cropped at 300 ppi. Each export is a new version; only the latest file is kept on disk.</p>
+  </div>
+</section>
+{% if !has_album %}
+<div class="empty"><h2>No album yet</h2><p>Build the album first.</p></div>
+{% else %}
+<div class="export-grid" hx-get="/export" hx-select=".export-grid" hx-target="this" hx-swap="outerHTML" hx-trigger="sse:changed">
+  {% for card in cards %}
+  <section class="export-card">
+    <header>
+      <h2>{{ card.edition.name }}</h2>
+      <span class="muted">{{ card.pages }} interior pages</span>
+    </header>
+    {% if card.busy %}
+    <p><span class="chip">Rendering…</span> see the progress bar above.</p>
+    {% else %}
+    <button class="primary" hx-post="/api/stages/export:{{ card.edition.key }}/run" hx-swap="none">Render print PDF</button>
+    {% endif %}
+    <ol class="versions">
+      {% for v in card.versions %}
+      <li>
+        <div><b>v{{ v.version }}</b> · {{ v.when }} · {{ v.pages }} pages{% if v.exists %} · {{ v.size }}{% endif %}
+          {% if let Some(changed) = v.changed %}{% if *changed > 0 %} · <span class="chip chip-warn">{{ changed }} Spreads changed since</span>{% else %} · <span class="chip chip-ok">up to date</span>{% endif %}{% endif %}
+        </div>
+        {% if v.problems.is_empty() %}<p class="small-print ok-badge">✓ Preflight passed</p>{% else %}
+        <details><summary class="bad">{{ v.problems.len() }} preflight warnings</summary><ul class="small-print">{% for p in v.problems %}<li>{{ p }}</li>{% endfor %}</ul></details>{% endif %}
+        <div class="toolbar">
+          {% if v.exists %}<a class="button ghost" href="/exports/{{ v.id }}/download">Download PDF</a>{% else %}<span class="muted small-print">File removed to save space</span>{% endif %}
+          <button class="ghost small" hx-post="/api/exports/{{ v.id }}/delete" hx-confirm="Delete v{{ v.version }}?">Delete</button>
+        </div>
+      </li>
+      {% else %}
+      <li class="muted">Not exported yet.</li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

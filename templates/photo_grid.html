@@ -1,0 +1,15 @@
+{% for tile in tiles %}
+<figure class="tile tile-{{ tile.status }}{% if tile.in_album %} in-album{% endif %}" hx-get="/photos/{{ tile.photo.id }}" hx-target="#drawer" hx-on::after-request="openDrawer()">
+  <img src="/img/{{ tile.photo.id }}/s" loading="lazy" alt="">
+  <figcaption>
+    {% if tile.in_album %}<span class="tag tag-album">in album</span>{% endif %}
+    {% if tile.status == "pinned" %}<span class="tag tag-pin">pinned</span>{% endif %}
+    {% if tile.status == "banned" %}<span class="tag tag-ban">banned</span>{% endif %}
+    {% if tile.status == "rejected" %}<span class="tag tag-rej" title="{{ tile.status_label }}">{{ tile.status_label }}</span>{% endif %}
+    {% if tile.shot_size > 1 %}<span class="tag">×{{ tile.shot_size }}</span>{% endif %}
+  </figcaption>
+</figure>
+{% endfor %}
+{% if let Some(next) = next %}
+<div class="more" hx-get="/api/photos?{{ next }}" hx-trigger="revealed" hx-swap="outerHTML">Loading…</div>
+{% endif %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{% if card.named %}{{ card.name }}{% else %}Person {{ card.anchor }}{% endif %}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>{% if card.named %}{{ card.name }}{% else %}Person {{ card.anchor }}{% endif %} {% if !card.role_name().is_empty() %}<span class="chip">{{ card.role_name() }}</span>{% endif %}</h1>
+    <p class="lead">{{ faces.len() }} faces in {{ card.photos }} photos{% if card.soft > 0 %} · <b>{{ card.soft }} to confirm</b> (dashed){% endif %}. Tick faces that aren't this person, then remove them or split them into a new person.</p>
+  </div>
+  <div class="toolbar">
+    <a class="button ghost" href="/photos?person={{ card.anchor }}">See their photos</a>
+    <a class="button ghost" href="/people">← Everyone</a>
+  </div>
+</section>
+<div class="toolbar sticky-tools">
+  <button class="primary" onclick="faceAction('confirm')">✓ Confirm ticked</button>
+  <button class="ghost" onclick="faceAction('remove')">Not this person</button>
+  <button class="ghost" onclick="faceAction('split')">Split into a new person</button>
+  <button class="ghost" onclick="tickSoft()">Tick all to confirm</button>
+  <span class="spacer"></span>
+  <span class="muted" id="ticked">0 ticked</span>
+</div>
+<div class="faces-grid">
+  {% for (face, photo, soft) in faces %}
+  <label class="face-tile{% if *soft %} soft{% endif %}">
+    <input type="checkbox" class="face-box" value="{{ face }}" data-soft="{{ soft }}" onchange="countTicked()">
+    <img src="/face/{{ face }}" loading="lazy" alt="">
+    <a href="#" hx-get="/photos/{{ photo }}" hx-target="#drawer" title="Open photo">⤢</a>
+  </label>
+  {% endfor %}
+</div>
+<script>
+function ticked() { return [...document.querySelectorAll(".face-box:checked")].map((b) => b.value); }
+function countTicked() { document.getElementById("ticked").textContent = ticked().length + " ticked"; }
+function tickSoft() { document.querySelectorAll('.face-box[data-soft="true"]').forEach((b) => (b.checked = true)); countTicked(); }
+function faceAction(action) {
+  const faces = ticked();
+  if (!faces.length) { toast("Tick some faces first"); return; }
+  htmx.ajax("POST", `/api/faces/${action}`, { swap: "none", values: { faces: faces.join(","), anchor: "{{ card.anchor }}" } });
+}
+</script>
+{% endblock %}

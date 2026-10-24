@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Album{% endblock %} · iris</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/vendor/htmx.min.js"></script>
+  <script src="/assets/vendor/htmx-sse.js"></script>
+  <script src="/assets/vendor/Sortable.min.js"></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body hx-ext="sse" sse-connect="/api/events">
+  <header class="top">
+    <a class="brand" href="/"><span class="brand-mark">◯</span> Emna &amp; Thibaut <small>album</small></a>
+    <nav class="steps">
+      <a href="/" class="{% if nav == "index" %}active{% endif %}"><b>1</b> Index</a>
+      <a href="/people" class="{% if nav == "people" %}active{% endif %}"><b>2</b> People</a>
+      <a href="/timeline" class="{% if nav == "timeline" %}active{% endif %}"><b>3</b> Chapters</a>
+      <a href="/album" class="{% if nav == "album" %}active{% endif %}"><b>4</b> Album</a>
+      <a href="/design" class="{% if nav == "design" %}active{% endif %}"><b>5</b> Text &amp; design</a>
+      <a href="/export" class="{% if nav == "export" %}active{% endif %}"><b>6</b> Export</a>
+    </nav>
+    <nav class="aside">
+      <a href="/photos" class="{% if nav == "photos" %}active{% endif %}">Photos</a>
+      <a href="/settings" class="{% if nav == "settings" %}active{% endif %}">Settings</a>
+      <button class="icon" title="Undo (⌘Z)" hx-post="/api/undo" hx-swap="none">↶</button>
+      <button class="icon" title="Redo (⇧⌘Z)" hx-post="/api/redo" hx-swap="none">↷</button>
+      <button class="icon" title="History" onclick="toggleHistory()">☰</button>
+    </nav>
+  </header>
+  <div class="stripes"><i></i><i></i><i></i></div>
+  <div id="jobbar" sse-swap="job"></div>
+  <aside id="history" class="history" hidden hx-get="/api/history" hx-trigger="sse:changed, open"></aside>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toasts"></div>
+  <div id="drawer" class="drawer" hidden></div>
+</body>
+</html>

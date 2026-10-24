@@ -1,7 +1,6 @@
-database_path = "iris.db"
-library_paths = ["../photos_backup"]
-ocr_models_dir = "./models"
-ocr_edge_density_threshold = 0.08
-
-[faces]
-min_cluster_size = 6
+# Bootstrap only: where things live. Every other setting is edited in the GUI.
+database_path = "../album.db"
+photographer_root = "../wedding-photo/photographer"
+guests_root = "../wedding-photo/guests"
+cache_dir = "../.iris-cache"
+exports_dir = "../exports"
