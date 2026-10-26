@@ -16,7 +16,9 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - `src/state.rs` — the album as the user sees it (stored analysis + Overrides).
 - `src/album.rs` — glue: candidates, current album (Proposal + Locks), previews.
 - `src/render.rs` — `Renderer` trait, Typst implementation (CLI for now).
-- `src/web` — axum + askama (`templates/`) + htmx; assets embedded from `assets/`.
+- `src/preflight.rs` — checks the print PDF as written (page sizes, parity, fonts); golden PDF test.
+- `src/web` — axum + askama (`templates/`) + htmx; assets embedded from `assets/` (`assets/fonts/` = static print fonts, `assets/web-fonts/` = variable fonts for the UI only).
+- `scripts/` — `serve.sh` (run the app), `shot.sh` (GUI screenshot).
 
 ## Rules
 
@@ -30,18 +32,20 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 8. Tests live at the agreed seams only: the pure core and the indexing helpers. Keep them few and behavioural. Check the GUI with a headless browser screenshot.
 9. Quality v2 and Rejected are computed on the fly from stored measurements (`iris_core::quality`), so threshold and Couple changes apply at once.
 
-## Status and next steps (2026-10-24)
+## Status and next steps (2026-10-26)
 
 ### Running the app during QA
-- The app runs from a copy of the release binary: `/private/tmp/claude-501/-Users-thibaut-ws-iris/885e06f2-0a26-419b-a38f-d93ce37c8c97/scratchpad/iris-app serve --port 3000`, started from the repo root with `PATH="/opt/homebrew/bin:$PATH"` (Typst). Copy `target/release/iris` over it before restarting so rebuilds don't clobber the running binary.
-- The user labels People while it runs: restart only when no Override was saved in the last 20 s (`select (strftime('%s','now')*1000 - max(ts_ms))/1000 from overrides`).
-- Screenshots: headless Brave, `shot.sh URL OUT [W,H]` in the same scratchpad. Its cache once served a stale `app.css`; delete `brave-profile/` if styles look old. Tell the user to hard-refresh (⌘⇧R) after CSS/JS changes.
-- DB: `album.db` at the repo root (gitignored). Proxies: `.iris-cache/webp/`.
+- `scripts/serve.sh` (after `devenv shell -- cargo build --release`): copies the binary to `.iris-cache/iris-app` and serves on :3000. Run it in the background from the repo root; to restart, stop it, rebuild, run again.
+- The user labels People while it runs: restart only when no Override was saved in the last 20 s (`sqlite3 album.db "select (strftime('%s','now')*1000 - max(ts_ms))/1000 from overrides"`).
+- Screenshots: `scripts/shot.sh URL OUT [W,H]` (headless Brave, profile in `.iris-cache/brave-profile`; delete it if styles look old). Spread previews: `curl localhost:3000/preview/<uid>`, then `vips thumbnail` to ≤ 1200 px before reading. Tell the user to hard-refresh (⌘⇧R) after CSS/JS changes.
+- DB: `album.db` at the repo root (gitignored). Proxies: `.iris-cache/webp/`. Exports: `exports/<edition>/`.
 
 ### State of the data
-- Indexed: 980 photos (626 photographer, 354 guests), 653 Shots, 92 Persons, ~142 faces to confirm. All 9 Chapters populated; first album built (48 pages, 23 Spreads).
-- The user named ~20 people, set Emna = Bride, Thibaut = Groom, started filling Groups. No Quotas yet.
+- Indexed: 980 photos (626 photographer, 354 guests). All 9 Chapters populated. Album: 48 pages, 23 Spreads, 140 Shots; `ours` v2 exported with 0 preflight warnings.
+- The user's Overrides: ~65 names, Emna = Bride, Thibaut = Groom, 27 Group memberships, 7 Chapter moves, 4 Bans, 3 Locked Spreads. No Quotas yet.
+- The 3 Locked Spreads were Locked before the margins changed (15 → 10 mm): they keep the old geometry until "Relayout" in the Spread editor.
 - Default Chapter start times in `Settings::default()` are guesses; the photographer's mairie photos start at 14:07. The user should set real times in Settings.
+- Default Arabic titles (Tunisian) are in `Settings::default()` / `Texts::from`; the opening page's names (آمنة و تيبو) await Emna's check.
 
 ### Lessons (don't re-learn them)
 - `face_id` returns bboxes as fractions of the image (0–1), not pixels.
@@ -52,8 +56,10 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - Locked Spreads keep the geometry they were Locked with: after a margin change, "Relayout" them in the Spread editor.
 - Typst warns on variable fonts and silently falls back on unknown ones: print fonts in `assets/fonts/` are static instances; the variable originals for the web UI live in `assets/web-fonts/` (Typst scans font dirs recursively). Export preflight surfaces Typst warnings.
 - `render_print` gives both halves of a Spread the same (left, right) numbers.
+- zsh reads `$f[wght]` as an array subscript: write `${f}[wght]`.
+- A Proposal is stored at build time; the shown album is it + Locks + current Decisions. Check Conflicts against the shown album (`iris_core::album::conflicts`), not the stored one.
 
-### Code review of `17650dc...HEAD` — to fix next, in this order
+### Code review of `17650dc...f3f2533` — remaining findings, in this order
 **Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
 **Missing (Spec):** Conflicts beyond Ban/Pin (e.g. a MoveChapter or People Override that no longer resolves); Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
@@ -64,4 +70,4 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - Smells: string keys for Chapter/Group/Edition/Template; bare `i64` Persons; `exports()` 6-tuple → struct; `Spread { … }` literal duplicated in `album.rs`; "face is Couple" check duplicated in `state.rs` and `album.rs`; `jobs::hash` → `fingerprint`.
 - Possible bugs: `Source::parse` maps unknown values to Guest; Export staleness ignores texts/design/Bans; `couple_anchors()` recomputed per Photo in `AlbumState::load`.
 
-**Then:** update PLAN.md §13 ("As built") to match, and continue QA with the user (People → Chapter times → Chapters → rebuild → Spread editor → export a proof).
+**Then:** keep PLAN.md §13 ("As built") in step, and continue QA with the user (People → Chapter times → Chapters → rebuild → Spread editor → export a proof).
