@@ -229,14 +229,14 @@ fn editor(
     snapshot: &AlbumState,
     uid: u64,
     edition_key: &str,
-    preview: Option<&Spread>,
+    preview_spread: Option<&Spread>,
     crop_pending: bool,
 ) -> anyhow::Result<Option<Editor>> {
     let Some(album) = current(db, snapshot)? else { return Ok(None) };
     let edition = chosen_edition(snapshot, edition_key);
     let spreads = edition_spreads(&album, &edition);
     let Some(index) = spreads.iter().position(|s| s.uid == uid) else { return Ok(None) };
-    let spread = preview.unwrap_or(spreads[index]);
+    let spread = preview_spread.unwrap_or(spreads[index]);
     let settings = &snapshot.decisions.settings;
     let shots = layout_shots(snapshot);
     let (left, right) = pages(spread);
