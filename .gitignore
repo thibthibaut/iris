@@ -1,6 +1,7 @@
 /target
 iris.db
 *.db
+iris.db.old
 *.db-shm
 *.db-wal
 .DS_Store
