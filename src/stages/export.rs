@@ -1,13 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use iris_core::{
     album::edition_spreads,
     decisions::Decisions,
     layout::{bleed_crop, face_crop},
-    model::{Crop, PAGE_H, PAGE_W, PhotoId, Rect},
+    model::{Crop, Design, EditionDef, PAGE_H, PAGE_W, PhotoId, Rect, Spread},
 };
 use libvips::{VipsImage, ops};
+use serde::Serialize;
 
 use crate::{
     album::{current, layout_shots, renderer, unplaced_pins, warnings},
@@ -61,7 +65,7 @@ impl Stage for Export {
     }
 
     fn version(&self) -> i64 {
-        1
+        2
     }
 
     fn deps(&self) -> &'static [&'static str] {
@@ -72,8 +76,8 @@ impl Stage for Export {
         false
     }
 
-    fn decisions_key(&self, decisions: &Decisions) -> String {
-        format!("{:?}", decisions.locked.keys().collect::<Vec<_>>())
+    fn staleness_key(&self, db: &crate::db::Database, _decisions: &Decisions) -> Result<String> {
+        album_state_hash(db, self.edition, &AlbumState::load(db)?)
     }
 
     fn run(&self, ctx: &StageCtx, sink: &dyn ProgressSink, cancel: &CancelToken) -> Result<()> {
@@ -83,6 +87,7 @@ impl Stage for Export {
         let edition = settings.edition(self.edition).context("unknown Edition")?.clone();
         let album = current(&ctx.db, &state)?.context("build the album first")?;
         let spreads = edition_spreads(&album, &edition);
+        let inputs = export_inputs(&ctx.db, &state, &edition, &album, &spreads, bleed)?;
         let temp = ctx.config.temp_dir().join(format!("print-{}", self.edition));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp)?;
@@ -113,13 +118,11 @@ impl Stage for Export {
             }
 
             // Cover: the chosen photo, or the first Hero, or the best Couple photo.
-            let cover = cover_photo(&state, &album, &spreads);
-            let cover_path = match cover {
+            let cover_path = match inputs.cover_photo {
                 Some(photo) => {
                     let record = state.photo(photo).context("cover photo missing")?;
-                    let shots = layout_shots(&state);
                     let page = Rect { x: 0.0, y: 0.0, w: PAGE_W + 2.0 * bleed, h: PAGE_H + 2.0 * bleed };
-                    let crop = shots.get(&photo).map_or(Crop::FULL, |s| face_crop(s.aspect, page.aspect(), &s.faces).0);
+                    let crop = inputs.cover_crop.unwrap_or(Crop::FULL);
                     let out = temp.join("cover.jpg");
                     crop_original(Path::new(&record.path), crop, page, &out)?;
                     Some(out)
@@ -177,14 +180,18 @@ impl Stage for Export {
                 "problems": problems,
                 "fonts": facts.fonts,
                 "fonts_embedded": facts.fonts_not_embedded.is_empty(),
+                "album_state_hash": inputs.album_state_hash,
+                "keep_version": false,
                 "overrides_revision": ctx.db.overrides_revision()?,
             });
             ctx.db.add_export(self.edition, version, &pdf.to_string_lossy(), &manifest)?;
 
-            // Keep only the latest file per Edition (disk); older versions stay listed.
-            for (_, edition, older, path, _, _) in ctx.db.exports()? {
-                if edition == self.edition && older < version {
-                    let _ = std::fs::remove_file(&path);
+            // The latest and explicitly kept versions stay on disk and in history.
+            for path in ctx.db.prune_exports(self.edition, version)? {
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(path, %error, "failed to remove pruned Export PDF");
                 }
             }
             sink.message(&format!("v{version}: {interior} pages, {} warnings", manifest["problems"].as_array().map_or(0, Vec::len)));
@@ -194,6 +201,19 @@ impl Stage for Export {
         let _ = std::fs::remove_dir_all(&temp);
         result
     }
+}
+
+pub(crate) fn album_state_hash(db: &crate::db::Database, edition_key: &str, state: &AlbumState) -> Result<String> {
+    let Some(album) = current(db, state)? else {
+        return Ok(blake3::hash(b"iris-export-no-album-v2").to_hex().to_string());
+    };
+    let settings = &state.decisions.settings;
+    let edition = settings.edition(edition_key).context("unknown Edition")?;
+    // Unsupported printer profiles still get a stable key so the GUI can show the
+    // stage and let the user fix the setting; run() reports the actionable error.
+    let bleed = bleed_for(&settings.printer).unwrap_or(0.0);
+    let spreads = edition_spreads(&album, edition);
+    Ok(export_inputs(db, state, edition, &album, &spreads, bleed)?.album_state_hash)
 }
 
 /// Slots touching the page edge extend into the bleed.
@@ -217,7 +237,7 @@ fn with_bleed(rect: Rect, bleed: f64) -> Rect {
     out
 }
 
-fn cover_photo(state: &AlbumState, album: &iris_core::model::Proposal, spreads: &[&iris_core::model::Spread]) -> Option<PhotoId> {
+fn cover_photo(state: &AlbumState, album: &iris_core::model::Proposal, spreads: &[&Spread]) -> Option<PhotoId> {
     if let Some(chosen) = state.decisions.texts.get("cover.photo").and_then(|v| v.trim().parse().ok()) {
         return Some(chosen);
     }
@@ -227,6 +247,138 @@ fn cover_photo(state: &AlbumState, album: &iris_core::model::Proposal, spreads: 
         .flat_map(|s| s.photos.iter().map(|p| p.photo))
         .collect();
     heroes.first().copied().or_else(|| album.spreads.iter().flat_map(|s| s.photos.iter()).map(|p| p.photo).next())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportTexts {
+    chapter_titles: BTreeMap<String, (String, String)>,
+    group_titles: BTreeMap<String, (String, String)>,
+    opening: String,
+    opening_ar: String,
+    closing: String,
+    closing_ar: String,
+    cover_title: String,
+    cover_date: String,
+    cover_date_ar: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportPhotoInput {
+    id: PhotoId,
+    path: String,
+    file_name: String,
+    file_size: i64,
+    blake3_hash: Option<String>,
+}
+
+/// Stable, serializable inputs that affect the PDF or its manifest diagnostics.
+#[derive(Debug, Clone, Serialize)]
+struct ExportFingerprint {
+    schema: u32,
+    edition: EditionDef,
+    printer: String,
+    bleed_mm: f64,
+    design: Design,
+    spreads: Vec<Spread>,
+    texts: ExportTexts,
+    cover_photo: Option<PhotoId>,
+    cover_crop: Option<Crop>,
+    photos: Vec<ExportPhotoInput>,
+    bans: Vec<PhotoId>,
+    pins: Vec<PhotoId>,
+    spread_warnings: Vec<(u64, Vec<String>)>,
+    unplaced_pins: Vec<(PhotoId, String)>,
+    overrides_revision: String,
+}
+
+struct ExportInputs {
+    album_state_hash: String,
+    cover_photo: Option<PhotoId>,
+    cover_crop: Option<Crop>,
+}
+
+fn export_inputs(
+    db: &crate::db::Database,
+    state: &AlbumState,
+    edition: &EditionDef,
+    album: &iris_core::model::Proposal,
+    spreads: &[&Spread],
+    bleed: f64,
+) -> Result<ExportInputs> {
+    let settings = &state.decisions.settings;
+    let cover_photo = cover_photo(state, album, spreads);
+    let cover_crop = cover_photo.map(|photo| {
+        let shots = layout_shots(state);
+        let page = Rect { x: 0.0, y: 0.0, w: PAGE_W + 2.0 * bleed, h: PAGE_H + 2.0 * bleed };
+        shots.get(&photo).map_or(Crop::FULL, |shot| face_crop(shot.aspect, page.aspect(), &shot.faces).0)
+    });
+    let unplaced_pins = {
+        let mut pins = unplaced_pins(state, album);
+        pins.sort_by_key(|(photo, _)| *photo);
+        pins
+    };
+    let mut photo_ids: BTreeSet<PhotoId> = spreads.iter().flat_map(|spread| spread.photos.iter().map(|photo| photo.photo)).collect();
+    if let Some(photo) = cover_photo {
+        photo_ids.insert(photo);
+    }
+    photo_ids.extend(unplaced_pins.iter().map(|(photo, _)| *photo));
+    let photos = photo_ids
+        .into_iter()
+        .filter_map(|id| {
+            state.photo(id).map(|photo| ExportPhotoInput {
+                id,
+                path: photo.path.clone(),
+                file_name: photo.file_name.clone(),
+                file_size: photo.file_size,
+                blake3_hash: photo.blake3_hash.clone(),
+            })
+        })
+        .collect();
+    let texts = Texts::from(settings, &state.decisions.texts);
+    let fingerprint = ExportFingerprint {
+        schema: 1,
+        edition: edition.clone(),
+        printer: settings.printer.clone(),
+        bleed_mm: bleed,
+        design: settings.design.clone(),
+        spreads: spreads.iter().map(|spread| (*spread).clone()).collect(),
+        texts: ExportTexts {
+            chapter_titles: texts.chapter_titles.into_iter().collect(),
+            group_titles: texts.group_titles.into_iter().collect(),
+            opening: texts.opening,
+            opening_ar: texts.opening_ar,
+            closing: texts.closing,
+            closing_ar: texts.closing_ar,
+            cover_title: texts.cover_title,
+            cover_date: texts.cover_date,
+            cover_date_ar: texts.cover_date_ar,
+        },
+        cover_photo,
+        cover_crop,
+        photos,
+        bans: sorted_photo_ids(state.decisions.bans.iter().copied()),
+        pins: sorted_photo_ids(state.decisions.pins.iter().copied()),
+        spread_warnings: spreads.iter().map(|spread| (spread.uid, warnings(state, spread))).collect(),
+        unplaced_pins,
+        overrides_revision: db.overrides_revision()?,
+    };
+    let album_state_hash = fingerprint_hash(&fingerprint)?;
+    Ok(ExportInputs {
+        album_state_hash,
+        cover_photo,
+        cover_crop,
+    })
+}
+
+fn fingerprint_hash(fingerprint: &ExportFingerprint) -> Result<String> {
+    let bytes = serde_json::to_vec(fingerprint)?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn sorted_photo_ids(ids: impl Iterator<Item = PhotoId>) -> Vec<PhotoId> {
+    let mut ids: Vec<PhotoId> = ids.collect();
+    ids.sort_unstable();
+    ids
 }
 
 /// Crops an original (upright) to `crop` and resizes it to the Slot at 300 ppi, sRGB JPEG.
@@ -253,4 +405,106 @@ fn crop_original(path: &Path, crop: Crop, rect: Rect, out: &PathBuf) -> Result<(
     let options = ops::JpegsaveOptions { q: 95, keep: ops::ForeignKeep::Icc, ..Default::default() };
     ops::jpegsave_with_opts(&sharpened, &out.to_string_lossy(), &options).map_err(|e| vips_error(&e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iris_core::model::{PlacedPhoto, Settings, SpreadKind};
+
+    fn fingerprint() -> ExportFingerprint {
+        let settings = Settings::default();
+        let edition = settings.edition("ours").unwrap().clone();
+        ExportFingerprint {
+            schema: 1,
+            edition,
+            printer: settings.printer,
+            bleed_mm: 3.0,
+            design: settings.design,
+            spreads: vec![Spread {
+                uid: 7,
+                chapter: "prep_bride".into(),
+                kind: SpreadKind::Core,
+                group: None,
+                templates: ["hero".into(), String::new()],
+                photos: vec![PlacedPhoto {
+                    photo: 1,
+                    rect: Rect { x: 0.0, y: 0.0, w: PAGE_W, h: PAGE_H },
+                    crop: Crop::FULL,
+                }],
+                title: true,
+                locked: false,
+                position: 0,
+            }],
+            texts: ExportTexts {
+                chapter_titles: BTreeMap::from([("prep_bride".into(), ("Préparatifs".into(), "تحضيرات".into()))]),
+                group_titles: BTreeMap::new(),
+                opening: "Opening".into(),
+                opening_ar: "افتتاح".into(),
+                closing: "Closing".into(),
+                closing_ar: "ختام".into(),
+                cover_title: "Emna & Thibaut".into(),
+                cover_date: "19 juillet 2025".into(),
+                cover_date_ar: "19 جويلية 2025".into(),
+            },
+            cover_photo: Some(1),
+            cover_crop: Some(Crop::FULL),
+            photos: vec![ExportPhotoInput {
+                id: 1,
+                path: "/photos/one.jpg".into(),
+                file_name: "one.jpg".into(),
+                file_size: 1024,
+                blake3_hash: Some("photo-content-hash".into()),
+            }],
+            bans: vec![2],
+            pins: vec![],
+            spread_warnings: vec![],
+            unplaced_pins: vec![],
+            overrides_revision: "4:5:0".into(),
+        }
+    }
+
+    #[test]
+    fn export_fingerprint_is_stable_and_tracks_print_inputs() {
+        let baseline = fingerprint();
+        let hash = fingerprint_hash(&baseline).unwrap();
+        assert_eq!(hash, fingerprint_hash(&baseline.clone()).unwrap());
+
+        let mut changed = baseline.clone();
+        changed.spreads[0].locked = true;
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "Locks affect export freshness");
+
+        let mut changed = baseline.clone();
+        changed.texts.chapter_titles.get_mut("prep_bride").unwrap().0 = "New title".into();
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "text affects export freshness");
+
+        let mut changed = baseline.clone();
+        changed.design.emerald = "#123456".into();
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "design affects export freshness");
+
+        let mut changed = baseline.clone();
+        changed.printer = "another-printer".into();
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "printer affects export freshness");
+
+        let mut changed = baseline.clone();
+        changed.edition.group = Some("bride_family".into());
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "Edition contents affect export freshness");
+
+        let mut changed = baseline.clone();
+        changed.bans.push(9);
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "Bans affect export freshness");
+
+        let mut changed = baseline.clone();
+        changed.cover_photo = Some(3);
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "cover selection affects export freshness");
+
+        let mut changed = baseline;
+        changed.photos[0].blake3_hash = Some("changed-photo-content-hash".into());
+        assert_ne!(hash, fingerprint_hash(&changed).unwrap(), "source image changes affect export freshness");
+    }
+
+    #[test]
+    fn decision_photo_ids_are_sorted_before_hashing() {
+        assert_eq!(sorted_photo_ids([9, 1, 4].into_iter()), sorted_photo_ids([4, 9, 1].into_iter()));
+    }
 }
