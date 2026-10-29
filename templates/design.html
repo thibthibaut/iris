@@ -52,6 +52,12 @@
       </select>
     </label>
     <div class="font-samples">{% for f in fonts %}<span style="font-family: '{{ f }}'">{{ f }}: Le cocktail</span>{% endfor %}</div>
+    <label>Body text
+      <select name="value" hx-post="/api/settings" hx-vals='{"key": "design.body_font", "kind": "font"}' hx-swap="none">
+        {% for f in body_fonts %}<option {% if design.body_font == *f %}selected{% endif %}>{{ f }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="font-samples">{% for f in body_fonts %}<span style="font-family: '{{ f }}'">{{ f }}: Nous avons célébré ce jour ensemble.</span>{% endfor %}</div>
     <label>Arabic titles
       <select name="value" hx-post="/api/settings" hx-vals='{"key": "design.arabic_font", "kind": "text"}' hx-swap="none" onchange="document.documentElement.style.setProperty('--arabic-font', `'${this.value}'`)">
         {% for f in arabic_fonts %}<option {% if design.arabic_font == *f %}selected{% endif %}>{{ f }}</option>{% endfor %}

@@ -280,7 +280,12 @@ impl JobManager {
     }
 
     pub fn stage(&self, name: &str) -> Option<Arc<dyn Stage>> {
-        self.0.stages.iter().find(|stage| stage.name() == name).cloned()
+        self.0
+            .stages
+            .iter()
+            .find(|stage| stage.name() == name)
+            .cloned()
+            .or_else(|| crate::stages::dynamic_export(name))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<JobEvent> {

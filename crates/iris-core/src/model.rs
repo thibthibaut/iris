@@ -302,6 +302,26 @@ impl Settings {
     pub fn edition(&self, key: &str) -> Option<&EditionDef> {
         self.editions.iter().find(|edition| edition.key == key)
     }
+
+    /// Keeps the two serialized sides of the Edition ↔ Group relationship in sync.
+    /// Edition definitions are authoritative; `ours` always includes everyone.
+    pub fn normalize_group_editions(&mut self) {
+        let group_keys: std::collections::HashSet<&str> = self.groups.iter().map(|group| group.key.as_str()).collect();
+        let mut assigned = std::collections::HashSet::new();
+        for edition in &mut self.editions {
+            if edition.key == "ours" {
+                edition.group = None;
+                continue;
+            }
+            if edition.group.as_deref().is_some_and(|key| !group_keys.contains(key) || !assigned.insert(key.to_string())) {
+                edition.group = None;
+            }
+        }
+
+        for group in &mut self.groups {
+            group.edition = self.editions.iter().find(|edition| edition.group.as_deref() == Some(group.key.as_str())).map(|edition| edition.key.clone());
+        }
+    }
 }
 
 /// One user decision. Overrides refer to Photos and faces, never to Shots, clusters or
