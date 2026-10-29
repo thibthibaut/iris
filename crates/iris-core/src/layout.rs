@@ -117,8 +117,11 @@ pub fn layout_page(shots: &[LayoutShot], template: &str, right_page: bool, title
     if kind == "hero" {
         let shot = &shots[0];
         let x = if right_page { PAGE_W } else { 0.0 };
-        let rect = Rect { x, y: 0.0, w: PAGE_W, h: PAGE_H };
-        let (crop, _) = face_crop(shot.aspect, rect.aspect(), &shot.faces);
+        let page = Rect { x, y: 0.0, w: PAGE_W, h: PAGE_H };
+        let (crop, _) = face_crop(shot.aspect, page.aspect(), &shot.faces);
+        // Cropping removes source pixels. Cap the Slot using the actual crop, including
+        // face-aware and user-selected Hero Templates, so the rendered Crop stays at 250 ppi.
+        let rect = fit_crop_resolution(page, shot.max_print_mm, shot.aspect, crop);
         return Some(vec![PlacedPhoto { photo: shot.photo, rect, crop }]);
     }
     let area = content_box(right_page, title);
@@ -172,7 +175,37 @@ fn fit_resolution(rect: Rect, max_print_mm: f64) -> Rect {
     }
     let scale = max_print_mm / longest;
     let (w, h) = (rect.w * scale, rect.h * scale);
-    Rect { x: rect.x + (rect.w - w) / 2.0, y: rect.y + (rect.h - h) / 2.0, w, h }
+    Rect {
+        x: rect.x + (rect.w - w) / 2.0,
+        y: rect.y + (rect.h - h) / 2.0,
+        w,
+        h,
+    }
+}
+
+/// Maximum longest-side print size for the pixels visible through `crop`, at 250 ppi.
+fn crop_max_print_mm(max_print_mm: f64, photo_aspect: f64, crop: Crop) -> f64 {
+    let source_long = photo_aspect.max(1.0);
+    let crop_long = (photo_aspect * crop.w).max(crop.h);
+    max_print_mm * crop_long / source_long
+}
+
+/// Shrinks a Slot around its center until both cropped source dimensions can print at 250 ppi.
+fn fit_crop_resolution(rect: Rect, max_print_mm: f64, photo_aspect: f64, crop: Crop) -> Rect {
+    if max_print_mm <= 0.0 || photo_aspect <= 0.0 || rect.w <= 0.0 || rect.h <= 0.0 {
+        return rect;
+    }
+    let source_long = photo_aspect.max(1.0);
+    let max_width = max_print_mm * photo_aspect * crop.w / source_long;
+    let max_height = max_print_mm * crop.h / source_long;
+    let scale = (max_width / rect.w).min(max_height / rect.h).min(1.0);
+    let (w, h) = (rect.w * scale, rect.h * scale);
+    Rect {
+        x: rect.x + (rect.w - w) / 2.0,
+        y: rect.y + (rect.h - h) / 2.0,
+        w,
+        h,
+    }
 }
 
 /// How good a laid-out page is: lower is better.
@@ -182,7 +215,9 @@ fn page_cost(shots: &[LayoutShot], placed: &[PlacedPhoto], template: &str, right
         let shot = &shots[0];
         let loss = 1.0 - (shot.aspect.min(PAGE_W / PAGE_H) / shot.aspect.max(PAGE_W / PAGE_H));
         // A Hero fills the page: only Photos sharp enough for that (crop included).
-        let printable = shot.max_print_mm * shot.aspect.min(PAGE_W / PAGE_H) / shot.aspect.max(PAGE_W / PAGE_H);
+        let page = Rect { x: 0.0, y: 0.0, w: PAGE_W, h: PAGE_H };
+        let (crop, _) = face_crop(shot.aspect, page.aspect(), &shot.faces);
+        let printable = crop_max_print_mm(shot.max_print_mm, shot.aspect, crop);
         return if shot.hero && printable >= PAGE_W { loss } else { 10.0 };
     }
     let area = content_box(right_page, title);
@@ -418,6 +453,35 @@ mod tests {
 
         let small = spread.photos.iter().find(|p| p.photo == 2).unwrap();
         assert!(small.rect.w.max(small.rect.h) <= 90.0 + 1e-6, "blown up beyond 250 ppi: {:?}", small.rect);
+    }
+
+    #[test]
+    fn hero_slot_uses_the_cropped_resolution_even_for_an_explicit_template() {
+        // The source's 300 mm print size exceeds the page, but a 2:1 Photo loses
+        // almost a third of its width in the Hero Crop. The cropped Slot must shrink.
+        let shot = LayoutShot { photo: 9, aspect: 2.0, max_print_mm: 300.0, ..LayoutShot::default() };
+        let mut page = layout_page(&[shot.clone()], "hero", false, false).unwrap();
+        let placed = page.remove(0);
+        let crop = placed.crop;
+        let source_long = shot.aspect.max(1.0);
+        let ppi_x = 250.0 * shot.max_print_mm * shot.aspect * crop.w / source_long / placed.rect.w;
+        let ppi_y = 250.0 * shot.max_print_mm * crop.h / source_long / placed.rect.h;
+
+        assert!(placed.rect.w < PAGE_W, "Hero was not shrunk for its Crop: {:?}", placed.rect);
+        assert!(ppi_x >= 249.999 && ppi_y >= 249.999, "cropped Hero prints at {} ppi", ppi_x.min(ppi_y));
+    }
+
+    #[test]
+    fn portrait_hero_slot_uses_the_cropped_resolution_too() {
+        let shot = LayoutShot { photo: 10, aspect: 0.7, max_print_mm: 300.0, ..LayoutShot::default() };
+        let mut page = layout_page(&[shot.clone()], "hero", true, false).unwrap();
+        let placed = page.remove(0);
+        let source_long = shot.aspect.max(1.0);
+        let ppi_x = 250.0 * shot.max_print_mm * shot.aspect * placed.crop.w / source_long / placed.rect.w;
+        let ppi_y = 250.0 * shot.max_print_mm * placed.crop.h / source_long / placed.rect.h;
+
+        assert!(placed.rect.w < PAGE_W && placed.rect.h < PAGE_H, "portrait Hero did not shrink for its Crop: {:?}", placed.rect);
+        assert!(ppi_x >= 249.999 && ppi_y >= 249.999, "cropped portrait Hero prints at {} ppi", ppi_x.min(ppi_y));
     }
 
     #[test]

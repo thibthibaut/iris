@@ -5,23 +5,78 @@
 <script>
 let selected = null;
 function selectSlot(el) {
+  const editor = document.getElementById("editor");
+  if (editor.dataset.cropPending === "true" && selected && selected !== el.dataset.photo) {
+    const photo = el.dataset.photo;
+    cancelCrop().then(() => {
+      const next = document.querySelector(`.slot[data-photo="${CSS.escape(photo)}"]`);
+      if (next) selectSlot(next);
+    });
+    return;
+  }
   document.querySelectorAll(".slot.selected").forEach((s) => s.classList.remove("selected"));
   el.classList.add("selected");
   selected = el.dataset.photo;
   document.querySelectorAll("[data-needs-slot]").forEach((b) => (b.disabled = false));
-  const editor = document.getElementById("editor");
   htmx.ajax("GET", `/api/spread/${editor.dataset.uid}/tray/${selected}?edition=${editor.dataset.edition}`, { target: "#tray" });
+}
+function restoreSelection() {
+  const again = selected && document.querySelector(`.slot[data-photo="${CSS.escape(selected)}"]`);
+  if (again) again.classList.add("selected"), document.querySelectorAll("[data-needs-slot]").forEach((b) => (b.disabled = false));
 }
 function act(op, values = {}) {
   const editor = document.getElementById("editor");
   return htmx.ajax("POST", `/api/spread/${editor.dataset.uid}/edit`, {
     target: "#editor", swap: "outerHTML",
     values: Object.assign({ op, edition: editor.dataset.edition }, values),
-  }).then(() => {
-    // Keep the same Slot selected after a re-render.
-    const again = selected && document.querySelector(`.slot[data-photo="${selected}"]`);
-    if (again) again.classList.add("selected"), document.querySelectorAll("[data-needs-slot]").forEach((b) => (b.disabled = false));
-  });
+  }).then(restoreSelection);
+}
+function previewCrop(values = {}) {
+  if (!selected) { toast("Click a photo first"); return Promise.resolve(); }
+  const editor = document.getElementById("editor");
+  const slot = document.querySelector(`.slot[data-photo="${CSS.escape(selected)}"]`);
+  const payload = Object.assign({ edition: editor.dataset.edition, photo: selected }, values);
+  const hasCrop = ["crop_x", "crop_y", "crop_w", "crop_h"].every((key) => values[key] !== undefined);
+  if (!values.reset && !values.cancel && !hasCrop && slot) {
+    payload.crop_x = slot.dataset.cropX;
+    payload.crop_y = slot.dataset.cropY;
+    payload.crop_w = slot.dataset.cropW;
+    payload.crop_h = slot.dataset.cropH;
+  }
+  return htmx.ajax("POST", `/api/spread/${editor.dataset.uid}/crop-preview`, {
+    target: "#editor", swap: "outerHTML", values: payload,
+  }).then(restoreSelection);
+}
+function adjustCrop(change) {
+  if (!selected) { toast("Click a photo first"); return; }
+  const slot = document.querySelector(`.slot[data-photo="${CSS.escape(selected)}"]`);
+  if (!slot) return;
+  const base = { x: Number(slot.dataset.cropX), y: Number(slot.dataset.cropY), w: Number(slot.dataset.cropW), h: Number(slot.dataset.cropH) };
+  const crop = { ...base };
+  if (change.zoom !== undefined) {
+    const cx = crop.x + crop.w / 2, cy = crop.y + crop.h / 2;
+    const factor = Math.min(2, Math.max(0.5, change.zoom));
+    crop.w = Math.min(crop.w / factor, 1);
+    crop.h = Math.min(crop.h / factor, 1);
+    const scale = Math.min(crop.w / base.w, crop.h / base.h);
+    crop.w = base.w * scale;
+    crop.h = base.h * scale;
+    crop.x = cx - crop.w / 2;
+    crop.y = cy - crop.h / 2;
+  }
+  crop.x = Math.min(1 - crop.w, Math.max(0, crop.x + (change.dx || 0) * crop.w));
+  crop.y = Math.min(1 - crop.h, Math.max(0, crop.y + (change.dy || 0) * crop.h));
+  previewCrop({ crop_x: crop.x, crop_y: crop.y, crop_w: crop.w, crop_h: crop.h });
+}
+function applyCrop() {
+  if (!selected) return;
+  const slot = document.querySelector(`.slot[data-photo="${CSS.escape(selected)}"]`);
+  if (!slot) return;
+  act("crop", { a: selected, crop_x: slot.dataset.cropX, crop_y: slot.dataset.cropY, crop_w: slot.dataset.cropW, crop_h: slot.dataset.cropH });
+}
+function cancelCrop() {
+  if (document.getElementById("editor")?.dataset.cropPending !== "true") return Promise.resolve();
+  return previewCrop({ cancel: true });
 }
 function onSelected(op, values = {}) {
   if (!selected) { toast("Click a photo first"); return; }
