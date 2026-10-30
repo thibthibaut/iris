@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     decisions::Decisions,
     layout::{LayoutShot, MIN_PER_SPREAD, layout_chapter, layout_spread},
-    model::{ChapterKey, Conflict, EditionDef, EditionKey, GroupKey, PersonId, PhotoId, Proposal, Spread, SpreadKind},
+    model::{ChapterKey, Conflict, EditionDef, GroupKey, PersonId, PhotoId, Proposal, Spread, SpreadKind},
     select::{Candidate, GroupPick, SelectInput, select},
 };
 
@@ -255,7 +255,7 @@ pub fn edition_pages(proposal: &Proposal, edition: &EditionDef) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Override, Settings};
+    use crate::model::{EditionKey, Override, Settings};
 
     fn input() -> AlbumInput {
         let mut input = AlbumInput::default();

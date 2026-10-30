@@ -104,8 +104,8 @@ impl Board {
         self.groups.iter().find(|g| g.key.as_str() == key).map_or(key, |g| g.name.as_str())
     }
 
-    fn members(&self, group: &str) -> Vec<&PersonCard> {
-        self.persons.iter().filter(|p| p.groups.iter().any(|g| g.as_str() == group)).collect()
+    fn members(&self, group: &GroupKey) -> Vec<&PersonCard> {
+        self.persons.iter().filter(|p| p.groups.iter().any(|g| g.as_str() == group.as_str())).collect()
     }
 }
 

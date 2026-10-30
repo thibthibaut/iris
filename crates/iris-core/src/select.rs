@@ -212,7 +212,7 @@ pub fn select(input: &SelectInput) -> Selection {
     }
 
     let total: usize = selected.iter().map(Vec::len).sum();
-    let mut unmet_quotas: Vec<(i64, u32, u32)> = input
+    let mut unmet_quotas: Vec<(PersonId, u32, u32)> = input
         .quotas
         .iter()
         .filter(|(_, quota)| **quota > 0)
