@@ -12,12 +12,18 @@ const MM_PER_PT: f64 = 25.4 / 72.0;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Problem {
     pub spread: Option<u64>,
+    #[serde(default)]
+    pub href: Option<String>,
     pub message: String,
 }
 
 impl Problem {
     pub fn album(message: impl Into<String>) -> Self {
-        Self { spread: None, message: message.into() }
+        Self { spread: None, href: None, message: message.into() }
+    }
+
+    pub fn linked(href: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { spread: None, href: Some(href.into()), message: message.into() }
     }
 }
 

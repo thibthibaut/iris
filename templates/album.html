@@ -17,6 +17,12 @@
 </nav>
 <div hx-get="/album?edition={{ edition.key }}" hx-trigger="sse:changed[event.data=='select']" hx-select="#album-body" hx-target="#album-body" hx-swap="outerHTML"></div>
 <div id="album-body">
+  {% if !override_conflicts.is_empty() %}
+  <div class="note note-bad">
+    <b>Overrides to review</b>
+    <ul>{% for conflict in override_conflicts %}<li>{% if let Some(href) = conflict.href %}<a href="{{ href }}">{{ conflict.message }}</a>{% else %}{{ conflict.message }}{% endif %}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
 {% if !has_album %}
   <div class="empty">
     <h2>No album yet</h2>

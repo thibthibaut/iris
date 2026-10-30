@@ -144,3 +144,38 @@ pub fn apply_locks(proposal: &Proposal, locked: &std::collections::BTreeMap<u64,
     indexed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     Proposal { spreads: indexed.into_iter().map(|(_, _, s)| s).collect(), ..proposal.clone() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{layout::layout_page, model::{SpreadKind, PAGE_H, PAGE_W}};
+
+    #[test]
+    fn selecting_a_hero_template_on_a_locked_spread_caps_the_cropped_slot() {
+        let shot = LayoutShot { photo: 9, aspect: 2.0, max_print_mm: 300.0, ..LayoutShot::default() };
+        let photos = layout_page(&[shot.clone()], "rows:1", true, false).unwrap();
+        let spread = Spread {
+            uid: 1,
+            chapter: "mairie_couple".into(),
+            kind: SpreadKind::Core,
+            group: None,
+            templates: [String::new(), "rows:1".into()],
+            photos,
+            title: false,
+            locked: true,
+            position: 0,
+        };
+        let shots = HashMap::from([(shot.photo, shot.clone())]);
+
+        let edited = apply(&spread, &Edit::SetTemplate { page: 1, template: "hero".into() }, &shots).unwrap();
+        let placed = edited.photos.iter().find(|p| p.photo == shot.photo).unwrap();
+        let source_long = shot.aspect.max(1.0);
+        let ppi_x = 250.0 * shot.max_print_mm * shot.aspect * placed.crop.w / source_long / placed.rect.w;
+        let ppi_y = 250.0 * shot.max_print_mm * placed.crop.h / source_long / placed.rect.h;
+
+        assert!(edited.locked, "the user's locked state should survive a template change");
+        assert_eq!(edited.templates[1], "hero");
+        assert!(placed.rect.w < PAGE_W && placed.rect.h < PAGE_H, "Hero did not shrink around its cropped image: {:?}", placed.rect);
+        assert!(ppi_x >= 249.999 && ppi_y >= 249.999, "cropped Hero prints at {} ppi", ppi_x.min(ppi_y));
+    }
+}

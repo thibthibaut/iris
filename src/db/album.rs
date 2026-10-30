@@ -36,6 +36,16 @@ pub struct StageRun {
     pub finished_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExportRecord {
+    pub id: i64,
+    pub edition: String,
+    pub version: i64,
+    pub path: String,
+    pub created_at_ms: i64,
+    pub manifest: serde_json::Value,
+}
+
 impl Database {
     // ---- Overrides -------------------------------------------------------------------
 
@@ -269,21 +279,69 @@ impl Database {
         Ok(())
     }
 
-    /// (id, edition, version, path, created_at_ms, manifest)
-    pub fn exports(&self) -> Result<Vec<(i64, String, i64, String, i64, serde_json::Value)>> {
+    /// Mark or unmark an Export for retention. The flag lives in the manifest so older
+    /// databases need no schema change.
+    pub fn set_export_keep(&self, id: i64, keep: bool) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let raw: Option<String> = tx
+            .query_row("SELECT manifest_json FROM exports WHERE id = ?", params![id], |row| row.get(0))
+            .optional()?;
+        let Some(raw) = raw else {
+            tx.commit()?;
+            return Ok(false);
+        };
+        let mut manifest: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+        if !manifest.is_object() {
+            manifest = serde_json::json!({});
+        }
+        manifest["keep_version"] = serde_json::Value::Bool(keep);
+        tx.execute("UPDATE exports SET manifest_json = ? WHERE id = ?", params![manifest.to_string(), id])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Remove old, unkept Export history entries and return their file paths for cleanup.
+    /// The newest version is always retained, whether or not it has been marked to keep.
+    pub fn prune_exports(&self, edition: &str, latest_version: i64) -> Result<Vec<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let rows = {
+            let mut stmt = tx.prepare("SELECT id, path, manifest_json FROM exports WHERE edition = ? AND version < ?")?;
+            let rows = stmt.query_map(params![edition, latest_version], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut paths = Vec::new();
+        for (id, path, raw_manifest) in rows {
+            let keep = serde_json::from_str::<serde_json::Value>(&raw_manifest)
+                .ok()
+                .and_then(|manifest| manifest.get("keep_version").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false);
+            if !keep {
+                tx.execute("DELETE FROM exports WHERE id = ?", params![id])?;
+                paths.push(path);
+            }
+        }
+        tx.commit()?;
+        Ok(paths)
+    }
+
+    pub fn exports(&self) -> Result<Vec<ExportRecord>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, edition, version, path, created_at_ms, manifest_json FROM exports ORDER BY edition, version DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-            ))
+            Ok(ExportRecord {
+                id: row.get(0)?,
+                edition: row.get(1)?,
+                version: row.get(2)?,
+                path: row.get(3)?,
+                created_at_ms: row.get(4)?,
+                manifest: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().context("failed to read exports")
     }
@@ -329,5 +387,28 @@ impl Database {
             params![hash, task, prompt_version, response.to_string()],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn pruning_removes_unkept_history_and_keeps_requested_versions() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.add_export("ours", 1, "/exports/v1.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
+        db.add_export("ours", 2, "/exports/v2.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
+        db.add_export("ours", 3, "/exports/v3.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
+        let version_one = db.exports().unwrap().into_iter().find(|row| row.version == 1).unwrap().id;
+
+        assert!(db.set_export_keep(version_one, true).unwrap());
+        let removed_paths = db.prune_exports("ours", 3).unwrap();
+        let remaining: Vec<i64> = db.exports().unwrap().into_iter().map(|row| row.version).collect();
+
+        assert_eq!(removed_paths, vec!["/exports/v2.pdf"]);
+        assert_eq!(remaining, vec![3, 1]);
     }
 }

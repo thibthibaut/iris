@@ -10,13 +10,102 @@
 <section class="page-head"><div><h1>Settings</h1><p class="lead">Every change is saved at once and can be undone (⌘Z).</p></div></section>
 <div class="settings">
   <fieldset><legend>Album</legend>
-    {% call num("page_target", "Pages in “ours”", s.page_target, "Family Editions have 6 pages less.") %}
+    <label>Wedding date
+      <input type="date" name="value" value="{{ s.wedding_date }}" required hx-post="/api/settings" hx-vals='{"key": "wedding_date", "kind": "date"}' hx-trigger="change" hx-swap="none">
+    </label>
+    {% call num("page_target", "Pages in “ours”", s.page_target, "Group Editions have 6 pages less.") %}
     {% call num("shots_per_spread", "Shots per Spread (average)", s.shots_per_spread, "Spreads vary from 3 to 9.") %}
     {% call num("max_heroes", "Heroes (max)", s.max_heroes, "A Hero fills a whole Page.") %}
     {% call num("couple_share", "Couple Share target", s.couple_share, "Share of Shots in Core Spreads showing the bride or groom (0–1).") %}
     <label>Group Spreads go in <select name="value" hx-post="/api/settings" hx-vals='{"key": "group_spread_chapter", "kind": "text"}' hx-swap="none">
       {% for c in s.chapters %}<option value="{{ c.key }}" {% if c.key == s.group_spread_chapter %}selected{% endif %}>{{ c.title_fr }}</option>{% endfor %}
     </select></label>
+  </fieldset>
+  <fieldset class="wide"><legend>Chapters</legend>
+    <p class="small-print">Titles are stored with each Chapter. CLIP prompts are one per line; an empty list falls back to the French title.</p>
+    {% for c in chapter_rows %}
+    <form class="definition-form chapter-setting" hx-post="/api/settings/definition" hx-swap="none">
+      <input type="hidden" name="entity" value="chapter">
+      <input type="hidden" name="action" value="save">
+      <input type="hidden" name="key" value="{{ c.key }}">
+      <strong>{{ c.key }}</strong>
+      <label>French title<input name="title_fr" value="{{ c.title_fr }}" maxlength="160" required></label>
+      <label>Arabic title<input name="title_ar" dir="rtl" lang="ar" value="{{ c.title_ar }}" maxlength="160"></label>
+      <label>CLIP prompts<textarea name="prompts" rows="3">{{ c.prompts }}</textarea></label>
+      <label>Spread weight<input type="number" name="weight" value="{{ c.weight }}" min="0.001" step="any" required></label>
+      <button class="ghost">Save Chapter</button>
+    </form>
+    {% endfor %}
+  </fieldset>
+  <fieldset class="wide"><legend>Groups</legend>
+    <p class="small-print">Group keys stay stable when a Group is renamed. Each Group can be linked to one Edition below.</p>
+    {% for g in group_rows %}
+    <div class="definition-row">
+      <form class="definition-form group-setting" hx-post="/api/settings/definition" hx-swap="none">
+        <input type="hidden" name="entity" value="group">
+        <input type="hidden" name="action" value="save">
+        <input type="hidden" name="key" value="{{ g.key }}">
+        <strong>{{ g.key }}</strong>
+        <label>Group name<input name="name" value="{{ g.name }}" maxlength="120" required></label>
+        <label>Arabic Group Spread title<input name="title_ar" dir="rtl" lang="ar" value="{{ g.title_ar }}" maxlength="160"></label>
+        <span class="small-print">Edition: {% if g.edition.is_empty() %}none{% else %}{{ g.edition }}{% endif %}</span>
+        <button class="ghost">Save Group</button>
+      </form>
+      <form hx-post="/api/settings/definition" hx-swap="none" hx-confirm="Remove Group {{ g.name }}?">
+        <input type="hidden" name="entity" value="group">
+        <input type="hidden" name="action" value="remove">
+        <input type="hidden" name="key" value="{{ g.key }}">
+        <button class="danger small">Remove</button>
+      </form>
+    </div>
+    {% endfor %}
+    <form class="definition-form group-setting" hx-post="/api/settings/definition" hx-swap="none">
+      <input type="hidden" name="entity" value="group">
+      <input type="hidden" name="action" value="add">
+      <strong>New Group</strong>
+      <label>Group name<input name="name" maxlength="120" required></label>
+      <label>Arabic Group Spread title<input name="title_ar" dir="rtl" lang="ar" maxlength="160"></label>
+      <button class="primary">Add Group</button>
+    </form>
+  </fieldset>
+  <fieldset class="wide"><legend>Editions</legend>
+    <p class="small-print">The everyone Edition is kept as <code>ours</code>. A Group can belong to one Edition; assigning it elsewhere moves that association.</p>
+    {% for e in edition_rows %}
+    <div class="definition-row">
+      <form class="definition-form edition-setting" hx-post="/api/settings/definition" hx-swap="none">
+        <input type="hidden" name="entity" value="edition">
+        <input type="hidden" name="action" value="save">
+        <input type="hidden" name="key" value="{{ e.key }}">
+        <strong>{{ e.key }}</strong>
+        <label>Edition name<input name="name" value="{{ e.name }}" maxlength="120" required></label>
+        <label>Group association
+          <select name="group" {% if e.key == "ours" %}disabled{% endif %}>
+            <option value="">Everyone</option>
+            {% for g in s.groups %}<option value="{{ g.key }}" {% if e.group == g.key.as_str() %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <button class="ghost">Save Edition</button>
+      </form>
+      {% if e.key != "ours" %}
+      <form hx-post="/api/settings/definition" hx-swap="none" hx-confirm="Remove Edition {{ e.name }}?">
+        <input type="hidden" name="entity" value="edition">
+        <input type="hidden" name="action" value="remove">
+        <input type="hidden" name="key" value="{{ e.key }}">
+        <button class="danger small">Remove</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <form class="definition-form edition-setting" hx-post="/api/settings/definition" hx-swap="none">
+      <input type="hidden" name="entity" value="edition">
+      <input type="hidden" name="action" value="add">
+      <strong>New Edition</strong>
+      <label>Edition name<input name="name" maxlength="120" required></label>
+      <label>Group association
+        <select name="group"><option value="">Everyone</option>{% for g in s.groups %}<option value="{{ g.key }}">{{ g.name }}</option>{% endfor %}</select>
+      </label>
+      <button class="primary">Add Edition</button>
+    </form>
   </fieldset>
   <fieldset><legend>Quality gate</legend>
     {% call num("gate.guest_min_quality", "Guest photos: min quality", s.gate.guest_min_quality, "") %}

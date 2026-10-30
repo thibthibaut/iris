@@ -8,11 +8,12 @@ use std::{
 
 use anyhow::Result;
 use iris_core::{
-    album::{AlbumInput, conflicts, spread_conflicts},
+    album::{AlbumInput, conflicts as core_conflicts, override_conflicts as core_override_conflicts, spread_conflicts},
     decisions::Eligibility,
     edit::apply_locks,
     layout::LayoutShot,
-    model::{ChapterKey, Conflict, EditionDef, EditionKey, PAGE_W, PhotoId, Proposal, Spread},
+    model::{ChapterKey, Conflict, EditionDef, EditionKey, PAGE_W, PeopleOverrideKind, PhotoId, Proposal, Spread},
+    people::FaceMembership,
     select::{Candidate, GroupPick},
 };
 
@@ -35,7 +36,7 @@ pub fn layout_shots(state: &AlbumState) -> HashMap<PhotoId, LayoutShot> {
             let faces = state
                 .counted_faces(photo.id)
                 .filter(|face| {
-                    couple.is_empty() || state.people.person_of_face(face.id).is_some_and(|p| couple.contains(&p.anchor)) || face.height_frac() > 0.08
+                    couple.is_empty() || state.is_couple_face(face, &couple) || face.height_frac() > 0.08
                 })
                 .map(|face| face.normalized())
                 .collect();
@@ -78,7 +79,7 @@ pub fn album_input(state: &AlbumState, embeddings: &HashMap<PhotoId, Vec<f32>>) 
         let eligible = !banned && (pinned.is_some() || matches!(state.eligibility(photo.id), Eligibility::Eligible | Eligibility::Pinned));
         let couple_face = state
             .counted_faces(photo.id)
-            .filter(|face| state.people.person_of_face(face.id).is_some_and(|p| couple.contains(&p.anchor)))
+            .filter(|face| state.is_couple_face(face, &couple))
             .map(|face| face.height_frac())
             .fold(0.0, f64::max);
         candidates.push(Candidate {
@@ -172,14 +173,86 @@ pub fn edition<'a>(state: &'a AlbumState, key: &str) -> Option<&'a EditionDef> {
     state.decisions.settings.edition(&EditionKey::from(key))
 }
 
+#[derive(Debug, Clone)]
+pub struct OverrideConflictNotice {
+    pub message: String,
+    pub href: Option<String>,
+}
+
+/// Overrides whose Photo, Chapter, face, Person, or Group reference no longer resolves.
+pub fn override_conflict_notices(state: &AlbumState) -> Vec<OverrideConflictNotice> {
+    let photos: HashSet<PhotoId> = state.photos.iter().map(|photo| photo.id).collect();
+    let faces: Vec<FaceMembership> = state.faces.iter().map(|face| FaceMembership {
+        face: face.id,
+        photo: face.photo_id,
+        cluster: face.cluster,
+        soft: face.soft,
+    }).collect();
+    core_override_conflicts(&state.decisions, &photos, &faces).into_iter().filter_map(|conflict| match conflict {
+        Conflict::MoveChapterPhotoMissing { photo, chapter } => Some(OverrideConflictNotice {
+            message: format!("Move Chapter Override for Photo {photo} to “{chapter}” no longer applies because the Photo is missing."),
+            href: Some("/timeline".into()),
+        }),
+        Conflict::MoveChapterChapterMissing { photo, chapter } => {
+            let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
+            Some(OverrideConflictNotice {
+                message: format!("{name}: Move Chapter Override points to “{chapter}”, which no longer exists. Choose a current Chapter in the Photo drawer."),
+                href: state.photo(photo).map(|_| format!("/photos/{photo}")),
+            })
+        }
+        Conflict::PeopleOverrideFaceMissing { operation, face } => Some(OverrideConflictNotice {
+            message: format!("{} Override for face {face} no longer applies because the face is missing.", people_operation(operation)),
+            href: Some("/people".into()),
+        }),
+        Conflict::PeopleOverrideTargetMissing { operation, face, target } => Some(OverrideConflictNotice {
+            message: format!("{} Override for face {face} no longer applies because target face {target} is missing.", people_operation(operation)),
+            href: Some("/people".into()),
+        }),
+        Conflict::PeopleOverridePersonMissing { operation, face } => Some(OverrideConflictNotice {
+            message: format!("{} Override for face {face} no longer resolves to a Person.", people_operation(operation)),
+            href: Some("/people".into()),
+        }),
+        Conflict::PeopleOverrideGroupMissing { face, group } => Some(OverrideConflictNotice {
+            message: format!("Group Override for face {face} refers to Group “{group}”, which no longer exists."),
+            href: Some("/people".into()),
+        }),
+        _ => None,
+    }).collect()
+}
+
+fn people_operation(operation: PeopleOverrideKind) -> &'static str {
+    match operation {
+        PeopleOverrideKind::Name => "Name",
+        PeopleOverrideKind::Role => "Role",
+        PeopleOverrideKind::Group => "Group",
+        PeopleOverrideKind::Quota => "Quota",
+        PeopleOverrideKind::Merge => "Merge",
+        PeopleOverrideKind::Split => "Split",
+        PeopleOverrideKind::Assign => "Assign",
+        PeopleOverrideKind::Remove => "Remove face",
+    }
+}
+
+fn conflicts(state: &AlbumState, album: &Proposal) -> Vec<Conflict> {
+    let photos: HashSet<PhotoId> = state.photos.iter().map(|photo| photo.id).collect();
+    let faces: Vec<FaceMembership> = state.faces.iter().map(|face| FaceMembership {
+        face: face.id,
+        photo: face.photo_id,
+        cluster: face.cluster,
+        soft: face.soft,
+    }).collect();
+    core_conflicts(album, &state.decisions, &photos, &faces)
+}
+
 /// What could go wrong in print: low resolution, cut faces, faces in the safe zone.
 /// Pinned Photos the album has no room for: (Photo, file name).
 pub fn unplaced_pins(state: &AlbumState, album: &Proposal) -> Vec<(PhotoId, String)> {
-    conflicts(album, &state.decisions)
+    conflicts(state, album)
         .into_iter()
         .filter_map(|conflict| match conflict {
             Conflict::PinNotPlaced { photo } => Some((photo, state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone()))),
             Conflict::BannedOnLockedSpread { .. } => None,
+            _ => None,
         })
         .collect()
 }
@@ -187,9 +260,18 @@ pub fn unplaced_pins(state: &AlbumState, album: &Proposal) -> Vec<(PhotoId, Stri
 pub fn warnings(state: &AlbumState, spread: &Spread) -> Vec<String> {
     let mut out = Vec::new();
     for conflict in spread_conflicts(spread, &state.decisions) {
-        if let Conflict::BannedOnLockedSpread { photo, .. } = conflict {
-            let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
-            out.push(format!("{name}: Banned, but this Spread is Locked — remove it here or unlock the Spread"));
+        match conflict {
+            Conflict::BannedOnLockedSpread { photo, .. } => {
+                let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
+                out.push(format!("{name}: Banned, but this Spread is Locked — remove it here or unlock the Spread"));
+            }
+            Conflict::MoveChapterOnLockedSpread { photo, chapter, .. } => {
+                let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
+                let chapter = state.decisions.settings.chapters.iter().find(|item| item.key.as_str() == chapter)
+                    .map_or(chapter.as_str(), |item| item.title_fr.as_str());
+                out.push(format!("{name}: moved to {chapter}, but this Spread is Locked — unlock it and rebuild to apply the Chapter move"));
+            }
+            _ => {}
         }
     }
     for placed in &spread.photos {

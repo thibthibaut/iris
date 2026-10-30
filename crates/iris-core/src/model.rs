@@ -98,12 +98,24 @@ impl Source {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
-        if value == "photographer" {
-            Self::Photographer
-        } else {
-            Self::Guest
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        match value {
+            "photographer" => Ok(Self::Photographer),
+            "guest" => Ok(Self::Guest),
+            _ => Err("unknown photo source"),
         }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::Source;
+
+    #[test]
+    fn parses_known_sources_and_rejects_unknown_values() {
+        assert_eq!(Source::parse("photographer"), Ok(Source::Photographer));
+        assert_eq!(Source::parse("guest"), Ok(Source::Guest));
+        assert!(Source::parse("archive").is_err());
     }
 }
 
@@ -386,6 +398,26 @@ impl Settings {
     pub fn edition(&self, key: &EditionKey) -> Option<&EditionDef> {
         self.editions.iter().find(|edition| &edition.key == key)
     }
+
+    /// Keeps the two serialized sides of the Edition ↔ Group relationship in sync.
+    /// Edition definitions are authoritative; `ours` always includes everyone.
+    pub fn normalize_group_editions(&mut self) {
+        let group_keys: std::collections::HashSet<&GroupKey> = self.groups.iter().map(|group| &group.key).collect();
+        let mut assigned = std::collections::HashSet::new();
+        for edition in &mut self.editions {
+            if edition.key == EditionKey::from("ours") {
+                edition.group = None;
+                continue;
+            }
+            if edition.group.as_ref().is_some_and(|key| !group_keys.contains(key) || !assigned.insert(key.clone())) {
+                edition.group = None;
+            }
+        }
+
+        for group in &mut self.groups {
+            group.edition = self.editions.iter().find(|edition| edition.group.as_ref() == Some(&group.key)).map(|edition| edition.key.clone());
+        }
+    }
 }
 
 /// One user decision. Overrides refer to Photos and faces, never to Shots, clusters or
@@ -507,11 +539,38 @@ pub struct Proposal {
     pub couple_share: f64,
 }
 
-/// An Override that cannot apply to the album as it stands, shown on its Spread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeopleOverrideKind {
+    Name,
+    Role,
+    Group,
+    Quota,
+    Merge,
+    Split,
+    Assign,
+    Remove,
+}
+
+/// An Override that cannot apply to the album as it stands, shown where it bites.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Conflict {
     /// A Banned Photo still printed because its Spread is Locked.
     BannedOnLockedSpread { photo: PhotoId, spread: u64 },
+    /// A Chapter move still refers to a Photo that no longer exists.
+    MoveChapterPhotoMissing { photo: PhotoId, chapter: String },
+    /// A Chapter move names a Chapter that has since been removed or renamed.
+    MoveChapterChapterMissing { photo: PhotoId, chapter: String },
+    /// A Locked Spread still places a moved Photo in its previous Chapter.
+    MoveChapterOnLockedSpread { photo: PhotoId, spread: u64, chapter: String },
+    /// A People Override still refers to a face that no longer exists.
+    PeopleOverrideFaceMissing { operation: PeopleOverrideKind, face: FaceId },
+    /// A People Override refers to a target face that no longer exists.
+    PeopleOverrideTargetMissing { operation: PeopleOverrideKind, face: FaceId, target: FaceId },
+    /// A People Override refers to a detected face that no longer belongs to a Person.
+    PeopleOverridePersonMissing { operation: PeopleOverrideKind, face: FaceId },
+    /// A Group referenced by a People Override no longer exists.
+    PeopleOverrideGroupMissing { face: FaceId, group: String },
     /// A Pinned Photo with no room: its Chapter is all Locked, or the layout could not fit it.
     PinNotPlaced { photo: PhotoId },
 }

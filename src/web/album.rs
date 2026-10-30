@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, render, toast};
 use crate::{
-    album::{current, layout_shots, page_numbers, preview, unplaced_pins, warnings},
+    album::{OverrideConflictNotice, current, layout_shots, override_conflict_notices, page_numbers, preview, unplaced_pins, warnings},
     db::Database,
     jobs::stage_status,
     state::AlbumState,
@@ -61,6 +61,7 @@ struct AlbumPage {
     unmet: Vec<(String, u32, u32)>,
     /// Pinned Photos with no room in the album.
     pins: Vec<(PhotoId, String)>,
+    override_conflicts: Vec<OverrideConflictNotice>,
     stale: Option<String>,
     building: bool,
 }
@@ -85,6 +86,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
     let mut couple_share = None;
     let mut unmet = Vec::new();
     let mut pins = Vec::new();
+    let override_conflicts = override_conflict_notices(&snapshot);
     let mut pages = 0;
     if let Some(album) = &album {
         let spreads = edition_spreads(album, &edition);
@@ -138,6 +140,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
         couple_target: settings.couple_share,
         unmet,
         pins,
+        override_conflicts,
         stale: status.stale_reason,
         building: state.jobs().is_busy("select"),
         edition,
@@ -202,6 +205,7 @@ pub struct Editor {
     pub kind: SpreadKind,
     pub group: String,
     pub locked: bool,
+    pub crop_pending: bool,
     pub title: bool,
     pub version: String,
     pub slots: Vec<Slot>,
@@ -222,12 +226,20 @@ fn describe(template: &str) -> String {
     }
 }
 
-fn editor(state: &AppState, db: &Database, snapshot: &AlbumState, uid: u64, edition_key: &str) -> anyhow::Result<Option<Editor>> {
+fn editor(
+    state: &AppState,
+    db: &Database,
+    snapshot: &AlbumState,
+    uid: u64,
+    edition_key: &str,
+    preview_spread: Option<&Spread>,
+    crop_pending: bool,
+) -> anyhow::Result<Option<Editor>> {
     let Some(album) = current(db, snapshot)? else { return Ok(None) };
     let edition = chosen_edition(snapshot, edition_key);
     let spreads = edition_spreads(&album, &edition);
     let Some(index) = spreads.iter().position(|s| s.uid == uid) else { return Ok(None) };
-    let spread = spreads[index];
+    let spread = preview_spread.unwrap_or(spreads[index]);
     let settings = &snapshot.decisions.settings;
     let shots = layout_shots(snapshot);
     let (left, right) = pages(spread);
@@ -252,6 +264,7 @@ fn editor(state: &AppState, db: &Database, snapshot: &AlbumState, uid: u64, edit
         kind: spread.kind,
         group: spread.group.as_ref().map(|group| group.as_str().to_owned()).unwrap_or_default(),
         locked: spread.locked,
+        crop_pending,
         title: spread.title,
         version: preview_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
         slots: spread
@@ -265,10 +278,11 @@ fn editor(state: &AppState, db: &Database, snapshot: &AlbumState, uid: u64, edit
                 height: placed.rect.h / 210.0 * 100.0,
                 crop: placed.crop,
                 name: snapshot.photo(placed.photo).map(|p| p.file_name.clone()).unwrap_or_default(),
-                ppi: snapshot
-                    .photo(placed.photo)
-                    .and_then(|p| p.width)
-                    .map_or(0, |w| ((w as f64 * placed.crop.w) / (placed.rect.w / 25.4)) as u32),
+                ppi: snapshot.photo(placed.photo).and_then(|p| p.width.zip(p.height)).map_or(0, |(w, h)| {
+                    let ppi_x = w as f64 * placed.crop.w / (placed.rect.w / 25.4);
+                    let ppi_y = h as f64 * placed.crop.h / (placed.rect.h / 25.4);
+                    ppi_x.min(ppi_y) as u32
+                }),
                 pinned: snapshot.decisions.pins.contains(&placed.photo),
                 hero: snapshot.decisions.heroes.contains(&placed.photo),
             })
@@ -286,7 +300,7 @@ pub async fn spread_page(State(state): State<AppState>, Path(uid): Path<u64>, Qu
     let page = blocking(move || {
         let db = state.db()?;
         let snapshot = state.snapshot(&db)?;
-        editor(&state, &db, &snapshot, uid, &query.edition)
+        editor(&state, &db, &snapshot, uid, &query.edition, None, false)
     })
     .await?;
     Ok(match page {
@@ -314,6 +328,14 @@ pub struct EditForm {
     dx: Option<f64>,
     #[serde(default)]
     dy: Option<f64>,
+    #[serde(default)]
+    crop_x: Option<f64>,
+    #[serde(default)]
+    crop_y: Option<f64>,
+    #[serde(default)]
+    crop_w: Option<f64>,
+    #[serde(default)]
+    crop_h: Option<f64>,
     #[serde(default)]
     position: Option<u32>,
     #[serde(default)]
@@ -380,28 +402,13 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
             "crop" => {
                 let photo = form.a.unwrap_or(0);
                 let placed = spread.photos.iter().find(|p| p.photo == photo).ok_or_else(|| anyhow::anyhow!("not on this Spread"))?;
-                let mut crop = placed.crop;
-                if let Some(zoom) = form.zoom {
-                    // Zoom around the center, keeping the Slot's shape.
-                    let (cx, cy) = (crop.x + crop.w / 2.0, crop.y + crop.h / 2.0);
-                    let factor = zoom.clamp(0.5, 2.0);
-                    crop.w = (crop.w / factor).min(1.0);
-                    crop.h = (crop.h / factor).min(1.0);
-                    let scale = (crop.w / placed.crop.w).min(crop.h / placed.crop.h);
-                    crop.w = placed.crop.w * scale;
-                    crop.h = placed.crop.h * scale;
-                    crop.x = cx - crop.w / 2.0;
-                    crop.y = cy - crop.h / 2.0;
-                }
-                crop.x += form.dx.unwrap_or(0.0) * crop.w;
-                crop.y += form.dy.unwrap_or(0.0) * crop.h;
-                crop.x = crop.x.clamp(0.0, (1.0 - crop.w).max(0.0));
-                crop.y = crop.y.clamp(0.0, (1.0 - crop.h).max(0.0));
-                if form.op == "crop" && form.zoom.is_none() && form.dx.is_none() && form.dy.is_none() {
-                    // Reset: the face-aware crop for this Slot.
-                    let shot = shots.get(&photo).ok_or_else(|| anyhow::anyhow!("unknown photo"))?;
-                    crop = iris_core::layout::face_crop(shot.aspect, placed.rect.aspect(), &shot.faces).0;
-                }
+                let crop = match (form.crop_x, form.crop_y, form.crop_w, form.crop_h) {
+                    (Some(x), Some(y), Some(w), Some(h)) => crop_from_components(x, y, w, h).ok_or_else(|| anyhow::anyhow!("invalid Crop"))?,
+                    _ => crop_action(placed.crop, form.zoom, form.dx, form.dy, || {
+                        let shot = shots.get(&photo)?;
+                        Some(iris_core::layout::face_crop(shot.aspect, placed.rect.aspect(), &shot.faces).0)
+                    }),
+                };
                 lock(edited(Edit::Crop { photo, crop })?, format!("Cropped {}", name(form.a)))?
             }
             "lock" => lock(spread.clone(), "Locked a Spread".into())?,
@@ -422,7 +429,7 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
             _ => anyhow::bail!("unknown action {}", form.op),
         };
         let snapshot = state.snapshot(&db)?;
-        let editor = editor(&state, &db, &snapshot, uid, &form.edition)?;
+        let editor = editor(&state, &db, &snapshot, uid, &form.edition, None, false)?;
         // Say so when a photo is too small for its Slot.
         let low: Vec<String> = editor
             .as_ref()
@@ -436,6 +443,104 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
     match editor {
         Some(editor) => Ok(toast(render(&editor)?, &label)),
         None => Ok(toast(Html(String::new()), &label)),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct CropPreviewForm {
+    #[serde(default)]
+    edition: String,
+    #[serde(default)]
+    photo: Option<PhotoId>,
+    #[serde(default)]
+    crop_x: Option<f64>,
+    #[serde(default)]
+    crop_y: Option<f64>,
+    #[serde(default)]
+    crop_w: Option<f64>,
+    #[serde(default)]
+    crop_h: Option<f64>,
+    #[serde(default)]
+    reset: bool,
+    #[serde(default)]
+    cancel: bool,
+}
+
+/// Renders a proposed Crop without storing an Override. The editor fragment shows the
+/// candidate Crop, its ppi and face warnings, and Apply/Cancel controls.
+pub async fn crop_preview(
+    State(state): State<AppState>,
+    Path(uid): Path<u64>,
+    axum::Form(form): axum::Form<CropPreviewForm>,
+) -> WebResult<Response> {
+    let fragment = blocking(move || {
+        let db = state.db()?;
+        let snapshot = state.snapshot(&db)?;
+        let Some(album) = current(&db, &snapshot)? else { return Ok(None) };
+        let spread = album.spreads.iter().find(|s| s.uid == uid).ok_or_else(|| anyhow::anyhow!("this Spread no longer exists"))?;
+        if form.cancel {
+            return editor(&state, &db, &snapshot, uid, &form.edition, None, false);
+        }
+        let photo = form.photo.ok_or_else(|| anyhow::anyhow!("select a photo first"))?;
+        let placed = spread.photos.iter().find(|p| p.photo == photo).ok_or_else(|| anyhow::anyhow!("not on this Spread"))?;
+        let shots = layout_shots(&snapshot);
+        let shot = shots.get(&photo).ok_or_else(|| anyhow::anyhow!("unknown photo"))?;
+        let crop = if form.reset {
+            iris_core::layout::face_crop(shot.aspect, placed.rect.aspect(), &shot.faces).0
+        } else {
+            crop_from_components(
+                form.crop_x.ok_or_else(|| anyhow::anyhow!("missing Crop x"))?,
+                form.crop_y.ok_or_else(|| anyhow::anyhow!("missing Crop y"))?,
+                form.crop_w.ok_or_else(|| anyhow::anyhow!("missing Crop width"))?,
+                form.crop_h.ok_or_else(|| anyhow::anyhow!("missing Crop height"))?,
+            )
+            .ok_or_else(|| anyhow::anyhow!("invalid Crop"))?
+        };
+        let proposed = apply(spread, &Edit::Crop { photo, crop }, &shots).ok_or_else(|| anyhow::anyhow!("that Crop does not fit this Spread"))?;
+        editor(&state, &db, &snapshot, uid, &form.edition, Some(&proposed), true)
+    })
+    .await?;
+    match fragment {
+        Some(editor) => Ok(render(&editor)?.into_response()),
+        None => Ok(StatusCode::NOT_FOUND.into_response()),
+    }
+}
+
+fn crop_from_components(x: f64, y: f64, w: f64, h: f64) -> Option<Crop> {
+    if ![x, y, w, h].into_iter().all(f64::is_finite) || w <= 0.0 || h <= 0.0 || w > 1.0 || h > 1.0 {
+        return None;
+    }
+    Some(Crop { x: x.clamp(0.0, 1.0 - w), y: y.clamp(0.0, 1.0 - h), w, h })
+}
+
+/// Applies the existing Crop toolbar action to a candidate Crop. No action means reset.
+fn crop_action(
+    base: Crop,
+    zoom: Option<f64>,
+    dx: Option<f64>,
+    dy: Option<f64>,
+    reset: impl FnOnce() -> Option<Crop>,
+) -> Crop {
+    let mut crop = base;
+    if let Some(zoom) = zoom {
+        let (cx, cy) = (crop.x + crop.w / 2.0, crop.y + crop.h / 2.0);
+        let factor = zoom.clamp(0.5, 2.0);
+        crop.w = (crop.w / factor).min(1.0);
+        crop.h = (crop.h / factor).min(1.0);
+        let scale = (crop.w / base.w).min(crop.h / base.h);
+        crop.w = base.w * scale;
+        crop.h = base.h * scale;
+        crop.x = cx - crop.w / 2.0;
+        crop.y = cy - crop.h / 2.0;
+    }
+    crop.x += dx.unwrap_or(0.0) * crop.w;
+    crop.y += dy.unwrap_or(0.0) * crop.h;
+    crop.x = crop.x.clamp(0.0, (1.0 - crop.w).max(0.0));
+    crop.y = crop.y.clamp(0.0, (1.0 - crop.h).max(0.0));
+    if zoom.is_none() && dx.is_none() && dy.is_none() {
+        reset().unwrap_or(base)
+    } else {
+        crop
     }
 }
 

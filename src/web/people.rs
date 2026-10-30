@@ -11,7 +11,7 @@ use iris_core::model::{GroupDef, GroupKey, Override, PersonId, Role};
 use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, render, toast};
-use crate::state::AlbumState;
+use crate::{album::{OverrideConflictNotice, override_conflict_notices}, state::AlbumState};
 
 pub struct PersonCard {
     pub anchor: i64,
@@ -92,6 +92,7 @@ struct PeoplePage {
 struct Board {
     persons: Vec<PersonCard>,
     groups: Vec<GroupDef>,
+    override_conflicts: Vec<OverrideConflictNotice>,
     bride: Option<String>,
     groom: Option<String>,
     to_confirm: usize,
@@ -121,6 +122,7 @@ fn board(state: &AppState) -> anyhow::Result<Board> {
         to_confirm: persons.iter().map(|p| p.soft).sum(),
         unnamed: persons.iter().filter(|p| !p.named).count(),
         groups: snapshot.decisions.settings.groups.clone(),
+        override_conflicts: override_conflict_notices(&snapshot),
         has_album: counts.is_some(),
         persons,
     })

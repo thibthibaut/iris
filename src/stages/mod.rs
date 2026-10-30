@@ -3,7 +3,7 @@
 mod chapters;
 mod cluster;
 pub mod embed;
-mod export;
+pub(crate) mod export;
 mod faces;
 mod ingest;
 mod quality;
@@ -46,6 +46,16 @@ pub fn all() -> Vec<Arc<dyn Stage>> {
         .into_iter()
     .chain(export::Export::all(&["ours", "bride_parents", "dad", "mom"]).into_iter().map(|e| Arc::new(e) as Arc<dyn Stage>))
     .collect()
+}
+
+/// Export stages for Editions added in the GUI after the worker was started.
+pub fn dynamic_export(name: &str) -> Option<Arc<dyn Stage>> {
+    let edition = name.strip_prefix("export:")?;
+    let mut bytes = edition.bytes();
+    if !bytes.next().is_some_and(|byte| byte.is_ascii_lowercase()) || !bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_') {
+        return None;
+    }
+    Some(Arc::new(export::Export::for_edition(edition)))
 }
 
 /// Runs `work` on every pending Photo of a per-Photo stage, `threads` at a time, and
@@ -92,6 +102,18 @@ where
     );
     sink.message(&format!("{} photos, {failed} failed", photos.len()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamically_resolves_export_stages_for_added_editions() {
+        let stage = dynamic_export("export:edition_123").unwrap();
+        assert_eq!(stage.name(), "export:edition_123");
+        assert!(dynamic_export("export:edition/123").is_none());
+    }
 }
 
 /// The 1200 px WebP proxy of a Photo, decoded (upright, sRGB).

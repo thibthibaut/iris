@@ -1,5 +1,7 @@
 //! Text & design (titles in French and Arabic, cover, colours, fonts) and Export.
 
+use std::collections::HashMap;
+
 use askama::Template;
 use axum::{
     body::Body,
@@ -30,6 +32,7 @@ struct DesignPage {
     rows: Vec<TextRow>,
     design: Design,
     fonts: Vec<&'static str>,
+    body_fonts: Vec<&'static str>,
     arabic_fonts: Vec<&'static str>,
     cover_photo: String,
     colors: Vec<(&'static str, &'static str, String)>,
@@ -72,6 +75,7 @@ pub async fn page(State(state): State<AppState>) -> WebResult<Html<String>> {
             },
             design: settings.design.clone(),
             fonts: vec!["Righteous", "Bungee", "Monoton", "Shrikhand", "Playfair Display"],
+            body_fonts: vec!["Playfair Display", "Righteous", "Bungee", "Monoton", "Shrikhand"],
             arabic_fonts: vec!["Lalezar", "Reem Kufi", "Aref Ruqaa", "Noto Naskh Arabic"],
             cover_photo: snapshot.decisions.texts.get("cover.photo").cloned().unwrap_or_default(),
         })
@@ -109,6 +113,8 @@ pub struct ExportCard {
 pub struct ExportVersion {
     pub id: i64,
     pub version: i64,
+    pub keep: bool,
+    pub fresh: bool,
     pub when: String,
     pub exists: bool,
     pub size: String,
@@ -133,8 +139,10 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
         let settings = &snapshot.decisions.settings;
         let album = current(&db, &snapshot)?;
         let exports = db.exports()?;
-        let current_uids: Vec<String> = Vec::new();
-        let _ = current_uids;
+        let mut current_hashes = HashMap::new();
+        for edition in &settings.editions {
+            current_hashes.insert(edition.key.clone(), crate::stages::export::album_state_hash(&db, &edition.key, &snapshot)?);
+        }
         let cards = settings
             .editions
             .iter()
@@ -145,19 +153,23 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
                     .unwrap_or_default();
                 let mut versions: Vec<ExportVersion> = exports
                     .iter()
-                    .filter(|(_, e, ..)| e == edition.key.as_str())
-                    .map(|(id, _, version, path, created, manifest)| {
-                        let exported: Vec<String> = manifest["spreads"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+                    .filter(|export| export.edition.as_str() == edition.key.as_str())
+                    .map(|export| {
+                        let exported: Vec<String> = export.manifest["spreads"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
                         let changed = spreads.iter().filter(|uid| !exported.contains(uid)).count() + exported.iter().filter(|uid| !spreads.contains(uid)).count();
-                        let metadata = std::fs::metadata(path).ok();
+                        let metadata = std::fs::metadata(&export.path).ok();
+                        let fresh = export.manifest["album_state_hash"].as_str()
+                            == current_hashes.get(&edition.key).map(String::as_str);
                         ExportVersion {
-                            id: *id,
-                            version: *version,
-                            when: ago(*created),
+                            id: export.id,
+                            version: export.version,
+                            keep: export.manifest["keep_version"].as_bool().unwrap_or(false),
+                            fresh,
+                            when: ago(export.created_at_ms),
                             exists: metadata.is_some(),
                             size: metadata.map(|m| super::pipeline::human_bytes(m.len())).unwrap_or_default(),
-                            pages: manifest["interior_pages"].as_i64().unwrap_or(0),
-                            problems: manifest["problems"]
+                            pages: export.manifest["interior_pages"].as_i64().unwrap_or(0),
+                            problems: export.manifest["problems"]
                                 .as_array()
                                 .into_iter()
                                 .flatten()
@@ -186,8 +198,9 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
 pub async fn download(State(state): State<AppState>, Path(id): Path<i64>) -> WebResult<Response> {
     let file = blocking(move || {
         let exports = state.db()?.exports()?;
-        let Some((_, edition, version, path, ..)) = exports.into_iter().find(|e| e.0 == id) else { return Ok(None) };
-        Ok(std::fs::read(&path).ok().map(|bytes| (bytes, format!("album-{edition}-v{version}.pdf"))))
+        let Some(export) = exports.into_iter().find(|export| export.id == id) else { return Ok(None) };
+        let filename = format!("album-{}-v{}.pdf", export.edition, export.version);
+        Ok(std::fs::read(&export.path).ok().map(|bytes| (bytes, filename)))
     })
     .await?;
     Ok(match file {
@@ -208,6 +221,16 @@ pub async fn delete_export(State(state): State<AppState>, Path(id): Path<i64>) -
         if let Some(path) = state.db()?.delete_export(id)? {
             let _ = std::fs::remove_file(path);
         }
+        state.jobs().notify("export");
+        Ok(())
+    })
+    .await?;
+    Ok(([("HX-Refresh", "true")], Html(String::new())).into_response())
+}
+
+pub async fn set_export_keep(State(state): State<AppState>, Path((id, keep)): Path<(i64, bool)>) -> WebResult<Response> {
+    blocking(move || {
+        state.db()?.set_export_keep(id, keep)?;
         state.jobs().notify("export");
         Ok(())
     })

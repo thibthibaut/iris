@@ -60,12 +60,12 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - A Proposal is stored at build time; the shown album is it + Locks + current Decisions. Check Conflicts against the shown album (`iris_core::album::conflicts`), not the stored one.
 
 ### Code review of `17650dc...f3f2533` — remaining findings, in this order
-**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
+**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin and unresolved MoveChapter/People Override Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
-**Missing (Spec):** Conflicts beyond Ban/Pin (e.g. a MoveChapter or People Override that no longer resolves); Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
+**Missing (Spec):** none of the listed findings remain: unresolved Override Conflicts, the settings editor (including Groups), Hero resolution/crop feedback, and export freshness/version retention are implemented.
 
 **Standards:**
-- CLAUDE.md rule 1: no GUI for Chapter weights/prompts/titles, Groups, Editions, wedding date, `design.body_font`; `Export::all(&["ours", …])` and `HERO_CHAPTERS` hard-code setting keys.
+- CLI `Export::all(&["ours", …])` keeps its default export keys; the GUI resolves added Editions dynamically. `HERO_CHAPTERS` still hard-codes Chapter keys.
 - CONTEXT.md vocabulary: "Family"/"families" in UI text (use Group), `ChapterSection`/`sections` (use Chapter), `duplicates`/`.dup-group` (use Shot/copies), `SpreadLayout` (borderline).
 - Smells: string keys for Chapter/Group/Edition/Template; bare `i64` Persons; `exports()` 6-tuple → struct; `Spread { … }` literal duplicated in `album.rs`; "face is Couple" check duplicated in `state.rs` and `album.rs`; `jobs::hash` → `fingerprint`.
 - Possible bugs: `Source::parse` maps unknown values to Guest; Export staleness ignores texts/design/Bans; `couple_anchors()` recomputed per Photo in `AlbumState::load`.
