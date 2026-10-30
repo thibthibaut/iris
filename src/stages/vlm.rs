@@ -55,7 +55,7 @@ fn targets(task: Task, db: &Database) -> Result<Vec<PhotoRecord>> {
             let heroes: HashSet<i64> = album
                 .spreads
                 .iter()
-                .filter(|s| s.templates.iter().any(|t| t == "hero"))
+                .filter(|s| s.templates.iter().any(|t| t.as_str() == "hero"))
                 .flat_map(|s| s.photos.iter().map(|p| p.photo))
                 .collect();
             album

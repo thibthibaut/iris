@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use iris_core::{
     decisions::{Decisions, Eligibility},
-    model::{PhotoId, Role, Source},
+    model::{ChapterKey, PersonId, PhotoId, Role, Source},
     people::{FaceMembership, People},
     quality::{Evaluation, Measurements, evaluate},
 };
@@ -75,8 +75,8 @@ impl AlbumState {
     }
 
     /// Persons (by anchor face) visible in a Photo.
-    pub fn persons_in(&self, photo: PhotoId) -> Vec<i64> {
-        let mut anchors: Vec<i64> = self
+    pub fn persons_in(&self, photo: PhotoId) -> Vec<PersonId> {
+        let mut anchors: Vec<PersonId> = self
             .counted_faces(photo)
             .filter_map(|face| self.people.person_of_face(face.id).map(|p| p.anchor))
             .collect();
@@ -85,7 +85,7 @@ impl AlbumState {
         anchors
     }
 
-    pub fn couple_anchors(&self) -> HashSet<i64> {
+    pub fn couple_anchors(&self) -> HashSet<PersonId> {
         [Role::Bride, Role::Groom]
             .into_iter()
             .filter_map(|role| self.people.with_role(role).map(|p| p.anchor))
@@ -117,8 +117,8 @@ impl AlbumState {
     }
 
     /// The Chapter after the user's moves.
-    pub fn chapter_of(&self, photo: &PhotoRecord) -> Option<String> {
-        self.decisions.chapter_moves.get(&photo.id).cloned().or_else(|| photo.chapter.clone())
+    pub fn chapter_of(&self, photo: &PhotoRecord) -> Option<ChapterKey> {
+        self.decisions.chapter_moves.get(&photo.id).cloned().or_else(|| photo.chapter.clone().map(ChapterKey::from))
     }
 
     pub fn eligibility(&self, photo: PhotoId) -> Eligibility {

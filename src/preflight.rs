@@ -98,7 +98,7 @@ pub fn check(facts: &PdfFacts, page_mm: (f64, f64)) -> Vec<Problem> {
 
 #[cfg(test)]
 mod tests {
-    use iris_core::model::{Crop, PAGE_H, PAGE_W, PlacedPhoto, Rect, Settings, Spread, SpreadKind};
+    use iris_core::model::{Crop, PAGE_H, PAGE_W, PlacedPhoto, Rect, Settings, Spread, SpreadKind, TemplateKey};
 
     use super::*;
     use crate::{
@@ -128,7 +128,7 @@ mod tests {
             chapter: settings.chapters[0].key.clone(),
             kind: SpreadKind::Core,
             group: None,
-            templates: ["hero".into(), String::new()],
+            templates: ["hero".into(), TemplateKey::default()],
             photos: vec![PlacedPhoto { photo: 1, rect: Rect { x: 0.0, y: 0.0, w: PAGE_W, h: PAGE_H }, crop: Crop::FULL }],
             title: true,
             locked: false,

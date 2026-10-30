@@ -39,7 +39,7 @@ pub async fn page(State(state): State<AppState>) -> WebResult<Html<String>> {
         let mut strips: Vec<Strip> = settings
             .chapters
             .iter()
-            .map(|c| Strip { key: c.key.clone(), title: c.title_fr.clone(), tiles: Vec::new(), to_check: 0 })
+            .map(|c| Strip { key: c.key.as_str().to_owned(), title: c.title_fr.clone(), tiles: Vec::new(), to_check: 0 })
             .chain(std::iter::once(Strip { key: "none".into(), title: "Not placed yet".into(), tiles: Vec::new(), to_check: 0 }))
             .collect();
         let mut photos: Vec<_> = snapshot
@@ -50,7 +50,7 @@ pub async fn page(State(state): State<AppState>) -> WebResult<Html<String>> {
         photos.sort_by(|a, b| a.chapter_order.unwrap_or(f64::MAX).total_cmp(&b.chapter_order.unwrap_or(f64::MAX)));
         for photo in photos {
             let chapter = snapshot.chapter_of(photo);
-            let index = chapter.as_deref().and_then(|key| settings.chapter_index(key)).unwrap_or(strips.len() - 1);
+            let index = chapter.as_ref().and_then(|key| settings.chapter_index(key)).unwrap_or(strips.len() - 1);
             let moved = snapshot.decisions.chapter_moves.contains_key(&photo.id);
             let uncertain = !moved && photo.chapter_source.as_deref() == Some("visual") && photo.chapter_margin.is_some_and(|m| m < 0.15);
             let excluded = !matches!(

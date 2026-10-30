@@ -12,7 +12,7 @@ use iris_core::{
     decisions::Eligibility,
     edit::apply_locks,
     layout::LayoutShot,
-    model::{Conflict, EditionDef, PAGE_W, PhotoId, Proposal, Spread},
+    model::{ChapterKey, Conflict, EditionDef, EditionKey, PAGE_W, PhotoId, Proposal, Spread},
     select::{Candidate, GroupPick},
 };
 
@@ -114,7 +114,7 @@ pub fn album_input(state: &AlbumState, embeddings: &HashMap<PhotoId, Vec<f32>>) 
 /// The album as the user sees it now.
 pub fn current(db: &Database, state: &AlbumState) -> Result<Option<Proposal>> {
     let proposal: Option<Proposal> = db.blob("proposal")?;
-    let order: Vec<String> = state.decisions.settings.chapters.iter().map(|c| c.key.clone()).collect();
+    let order: Vec<ChapterKey> = state.decisions.settings.chapters.iter().map(|c| c.key.clone()).collect();
     Ok(proposal.map(|proposal| apply_locks(&proposal, &state.decisions.locked, &order)))
 }
 
@@ -169,7 +169,7 @@ pub fn preview(config: &Config, state: &AlbumState, spread: &Spread, numbers: (u
 }
 
 pub fn edition<'a>(state: &'a AlbumState, key: &str) -> Option<&'a EditionDef> {
-    state.decisions.settings.edition(key)
+    state.decisions.settings.edition(&EditionKey::from(key))
 }
 
 /// What could go wrong in print: low resolution, cut faces, faces in the safe zone.

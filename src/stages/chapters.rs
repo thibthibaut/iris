@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use iris_core::{
     chapters::{GuestEvidence, guess_guest_chapter, split_contiguous},
-    model::Source,
+    model::{ChapterKey, Source},
     decisions::Decisions,
 };
 
@@ -183,7 +183,7 @@ impl Stage for Chapters {
                 latest_possible,
             };
             // Mistral's answer for an unsure photo, when the user asked for it.
-            if let Some(index) = crate::stages::vlm::chapter(&ctx.db, photo).and_then(|key| settings.chapter_index(&key)) {
+            if let Some(index) = crate::stages::vlm::chapter(&ctx.db, photo).and_then(|key| settings.chapter_index(&ChapterKey::from(key))) {
                 let order = neighbours.iter().find(|(c, _, _)| *c == index).map_or(1e6, |(_, s, o)| o + 0.5 - s * 0.1);
                 assigned.insert(photo.id, (index, 0.9, 0.5, "mistral", order));
                 sink.inc(1);
@@ -191,9 +191,9 @@ impl Stage for Chapters {
             }
             let referenced: Vec<bool> = (0..chapters.len()).map(|c| references.iter().any(|r| r.1 == c)).collect();
             // The groom without the bride, before the town hall: his preparation.
-            if let (Some(groom_prep), Some(bride_prep)) = (settings.chapter_index("prep_groom"), settings.chapter_index("prep_bride")) {
+            if let (Some(groom_prep), Some(bride_prep)) = (settings.chapter_index(&ChapterKey::from("prep_groom")), settings.chapter_index(&ChapterKey::from("prep_bride"))) {
                 let persons = people.persons_in(photo.id);
-                let before_mairie = photo.sent_at_utc.zip(settings.chapter_index("mairie_before").and_then(|c| starts[c])).is_some_and(|(sent, start)| sent < start);
+                let before_mairie = photo.sent_at_utc.zip(settings.chapter_index(&ChapterKey::from("mairie_before")).and_then(|c| starts[c])).is_some_and(|(sent, start)| sent < start);
                 let looks_like_prep = evidence.neighbours.iter().take(3).any(|(c, _)| *c == bride_prep || *c == groom_prep);
                 if groom.is_some_and(|g| persons.contains(&g)) && !bride.is_some_and(|b| persons.contains(&b)) && (before_mairie || looks_like_prep) {
                     assigned.insert(photo.id, (groom_prep, 0.8, 0.5, "groom without bride", 0.0));
@@ -221,7 +221,7 @@ impl Stage for Chapters {
 
         let rows: Vec<_> = assigned
             .into_iter()
-            .map(|(photo, (chapter, prob, margin, source, order))| (photo, chapters[chapter].key.clone(), prob, margin, source, order))
+            .map(|(photo, (chapter, prob, margin, source, order))| (photo, chapters[chapter].key.as_str().to_owned(), prob, margin, source, order))
             .collect();
         ctx.db.save_chapters(&rows)?;
         sink.message(&format!("{} photos placed, {low_confidence} to check", rows.len()));

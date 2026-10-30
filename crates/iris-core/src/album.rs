@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     decisions::Decisions,
     layout::{LayoutShot, MIN_PER_SPREAD, layout_chapter, layout_spread},
-    model::{Conflict, EditionDef, PhotoId, Proposal, Spread, SpreadKind},
+    model::{ChapterKey, Conflict, EditionDef, EditionKey, GroupKey, PersonId, PhotoId, Proposal, Spread, SpreadKind},
     select::{Candidate, GroupPick, SelectInput, select},
 };
 
@@ -18,8 +18,8 @@ pub struct AlbumInput {
     pub candidates: Vec<Candidate>,
     pub layout: HashMap<PhotoId, LayoutShot>,
     pub groups: Vec<GroupPick>,
-    pub quotas: HashMap<i64, u32>,
-    pub couple: HashSet<i64>,
+    pub quotas: HashMap<PersonId, u32>,
+    pub couple: HashSet<PersonId>,
 }
 
 /// Photo Spreads in `ours`: every page but the opening and closing ones.
@@ -30,10 +30,10 @@ pub fn photo_spreads(page_target: u32) -> usize {
 pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
     // A Group whose Spread cannot be laid out (too few photos) gives its Spread back to the
     // Chapters, so `ours` stays on its page target.
-    let mut skipped: HashSet<String> = HashSet::new();
+    let mut skipped: HashSet<GroupKey> = HashSet::new();
     loop {
         let proposal = build_skipping(input, decisions, &skipped);
-        let missing: Vec<String> = input
+        let missing: Vec<GroupKey> = input
             .groups
             .iter()
             .filter(|g| !g.members.is_empty() && !skipped.contains(&g.key))
@@ -47,16 +47,16 @@ pub fn build(input: &AlbumInput, decisions: &Decisions) -> Proposal {
     }
 }
 
-fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<String>) -> Proposal {
+fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<GroupKey>) -> Proposal {
     let settings = &decisions.settings;
     let chapters = &settings.chapters;
     let locked: Vec<&Spread> = decisions.locked.values().collect();
     let locked_photos: HashSet<PhotoId> = locked.iter().flat_map(|s| s.photos.iter().map(|p| p.photo)).collect();
-    let locked_groups: HashSet<&str> = locked.iter().filter(|s| s.kind == SpreadKind::Group).filter_map(|s| s.group.as_deref()).collect();
+    let locked_groups: HashSet<GroupKey> = locked.iter().filter(|s| s.kind == SpreadKind::Group).filter_map(|s| s.group.clone()).collect();
     let groups: Vec<GroupPick> = input
         .groups
         .iter()
-        .filter(|g| !g.members.is_empty() && !locked_groups.contains(g.key.as_str()) && !skipped.contains(&g.key))
+        .filter(|g| !g.members.is_empty() && !locked_groups.contains(&g.key) && !skipped.contains(&g.key))
         .cloned()
         .collect();
     let group_count = groups.len() + locked_groups.len();
@@ -115,7 +115,7 @@ fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<S
         if heroes.len() >= settings.max_heroes as usize {
             break;
         }
-        let Some(c) = settings.chapter_index(key) else { continue };
+        let Some(c) = settings.chapter_index(&ChapterKey::from(key)) else { continue };
         let already = heroes.iter().any(|h| by_photo.get(h).is_some_and(|x| x.chapter == c));
         let best = selection.chapters[c]
             .iter()
@@ -235,8 +235,8 @@ fn uid(spread: &Spread) -> u64 {
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     };
-    feed(spread.chapter.as_bytes());
-    feed(spread.group.as_deref().unwrap_or("").as_bytes());
+    feed(spread.chapter.as_str().as_bytes());
+    feed(spread.group.as_ref().map_or("", GroupKey::as_str).as_bytes());
     for placed in &spread.photos {
         feed(&placed.photo.to_le_bytes());
     }
@@ -262,8 +262,8 @@ mod tests {
         for photo in 1..=60 {
             let chapter = if photo <= 30 { 0 } else { 1 };
             let persons = match photo {
-                41..=44 => vec![100],
-                45..=48 => vec![200],
+                41..=44 => vec![PersonId::from(100)],
+                45..=48 => vec![PersonId::from(200)],
                 _ => vec![],
             };
             input.candidates.push(Candidate {
@@ -279,8 +279,8 @@ mod tests {
             input.layout.insert(photo, LayoutShot { photo, aspect: 1.5, quality: 0.5, max_print_mm: 500.0, ..LayoutShot::default() });
         }
         input.groups = vec![
-            GroupPick { key: "bride_family".into(), members: HashSet::from([100]), size: 4 },
-            GroupPick { key: "groom_dad_family".into(), members: HashSet::from([200]), size: 4 },
+            GroupPick { key: "bride_family".into(), members: HashSet::from([PersonId::from(100)]), size: 4 },
+            GroupPick { key: "groom_dad_family".into(), members: HashSet::from([PersonId::from(200)]), size: 4 },
         ];
         input
     }
@@ -313,12 +313,12 @@ mod tests {
         assert_eq!(placed.len(), placed.iter().collect::<HashSet<_>>().len(), "a Shot appears twice");
 
         let settings = Settings::default();
-        let ours = settings.edition("ours").unwrap();
-        let dad = settings.edition("dad").unwrap();
+        let ours = settings.edition(&EditionKey::from("ours")).unwrap();
+        let dad = settings.edition(&EditionKey::from("dad")).unwrap();
         let group_of = |s: &&Spread| s.group.clone();
         assert_eq!(edition_spreads(&again, ours).len(), again.spreads.len());
         let dad_groups: Vec<_> = edition_spreads(&again, dad).iter().filter_map(group_of).collect();
-        assert_eq!(dad_groups, vec!["groom_dad_family".to_string()]);
+        assert_eq!(dad_groups, vec![GroupKey::from("groom_dad_family")]);
         assert_eq!(edition_pages(&again, ours) - edition_pages(&again, dad), 2);
     }
 
@@ -326,12 +326,12 @@ mod tests {
     fn a_group_too_small_for_its_own_spread_does_not_cost_a_core_spread() {
         let mut input = input();
         // One photo of the Bride's friends: not enough for a Spread.
-        input.candidates[49].persons = vec![300];
-        input.groups.push(GroupPick { key: "friends".into(), members: HashSet::from([300]), size: 4 });
+        input.candidates[49].persons = vec![PersonId::from(300)];
+        input.groups.push(GroupPick { key: "friends".into(), members: HashSet::from([PersonId::from(300)]), size: 4 });
 
         let album = build(&input, &decisions(&[]));
 
-        assert!(!album.spreads.iter().any(|s| s.group.as_deref() == Some("friends")));
+        assert!(!album.spreads.iter().any(|s| s.group.as_ref() == Some(&GroupKey::from("friends"))));
         assert_eq!(album.spreads.len(), photo_spreads(16));
     }
 

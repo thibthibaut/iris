@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::{
     layout::{LayoutShot, layout_page, layout_spread, page_options, template_size},
-    model::{Crop, PAGE_W, PhotoId, Proposal, Spread},
+    model::{ChapterKey, Crop, PAGE_W, PhotoId, Proposal, Spread, TemplateKey},
 };
 
 #[derive(Debug, Clone)]
@@ -15,7 +15,7 @@ pub enum Edit {
     Remove { photo: PhotoId },
     /// Adds a Shot to a page (0 = left, 1 = right).
     Add { photo: PhotoId, page: usize },
-    SetTemplate { page: usize, template: String },
+    SetTemplate { page: usize, template: TemplateKey },
     Relayout,
     Crop { photo: PhotoId, crop: Crop },
     SetTitle { title: bool },
@@ -28,13 +28,13 @@ pub fn pages(spread: &Spread) -> (Vec<PhotoId>, Vec<PhotoId>) {
     (left, right)
 }
 
-fn lay(spread: &Spread, left: &[PhotoId], right: &[PhotoId], templates: [String; 2], shots: &HashMap<PhotoId, LayoutShot>) -> Option<Spread> {
+fn lay(spread: &Spread, left: &[PhotoId], right: &[PhotoId], templates: [TemplateKey; 2], shots: &HashMap<PhotoId, LayoutShot>) -> Option<Spread> {
     let get = |ids: &[PhotoId]| -> Option<Vec<LayoutShot>> { ids.iter().map(|id| shots.get(id).cloned()).collect() };
     let (left_shots, right_shots) = (get(left)?, get(right)?);
     let mut templates = templates;
     for (page, (ids, page_shots)) in [(left, &left_shots), (right, &right_shots)].into_iter().enumerate() {
         if ids.is_empty() {
-            templates[page] = String::new();
+            templates[page] = TemplateKey::default();
         } else if template_size(&templates[page]) != ids.len() || layout_page(page_shots, &templates[page], page == 1, false).is_none() {
             templates[page] = page_options(page_shots, page == 1, spread.title && page == 0).into_iter().next()?.0;
         }
@@ -111,7 +111,7 @@ pub fn apply(spread: &Spread, edit: &Edit, shots: &HashMap<PhotoId, LayoutShot>)
 
 /// The album as shown: the generated Proposal with each Locked Spread in place of the one
 /// it was made from, ordered by position inside its Chapter.
-pub fn apply_locks(proposal: &Proposal, locked: &std::collections::BTreeMap<u64, Spread>, chapter_order: &[String]) -> Proposal {
+pub fn apply_locks(proposal: &Proposal, locked: &std::collections::BTreeMap<u64, Spread>, chapter_order: &[ChapterKey]) -> Proposal {
     let mut spreads: Vec<Spread> = proposal
         .spreads
         .iter()
@@ -122,7 +122,7 @@ pub fn apply_locks(proposal: &Proposal, locked: &std::collections::BTreeMap<u64,
             spreads.push(spread.clone());
         }
     }
-    let chapter_index = |key: &str| chapter_order.iter().position(|k| k == key).unwrap_or(usize::MAX);
+    let chapter_index = |key: &ChapterKey| chapter_order.iter().position(|k| k == key).unwrap_or(usize::MAX);
     // Stable: unlocked Spreads keep their relative order around the Locked ones.
     let mut indexed: Vec<(usize, f64, Spread)> = spreads
         .into_iter()

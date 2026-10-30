@@ -5,7 +5,7 @@ use iris_core::{
     album::edition_spreads,
     decisions::Decisions,
     layout::{bleed_crop, face_crop},
-    model::{Crop, PAGE_H, PAGE_W, PhotoId, Rect},
+    model::{Crop, EditionKey, PAGE_H, PAGE_W, PhotoId, Rect},
 };
 use libvips::{VipsImage, ops};
 
@@ -80,7 +80,7 @@ impl Stage for Export {
         let state = AlbumState::load(&ctx.db)?;
         let settings = &state.decisions.settings;
         let bleed = bleed_for(&settings.printer)?;
-        let edition = settings.edition(self.edition).context("unknown Edition")?.clone();
+        let edition = settings.edition(&EditionKey::from(self.edition)).context("unknown Edition")?.clone();
         let album = current(&ctx.db, &state)?.context("build the album first")?;
         let spreads = edition_spreads(&album, &edition);
         let temp = ctx.config.temp_dir().join(format!("print-{}", self.edition));
@@ -223,7 +223,7 @@ fn cover_photo(state: &AlbumState, album: &iris_core::model::Proposal, spreads: 
     }
     let heroes: Vec<PhotoId> = spreads
         .iter()
-        .filter(|s| s.templates.iter().any(|t| t == "hero"))
+        .filter(|s| s.templates.iter().any(|t| t.as_str() == "hero"))
         .flat_map(|s| s.photos.iter().map(|p| p.photo))
         .collect();
     heroes.first().copied().or_else(|| album.spreads.iter().flat_map(|s| s.photos.iter()).map(|p| p.photo).next())

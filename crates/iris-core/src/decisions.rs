@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::model::{Override, PhotoId, Settings, Spread};
+use crate::model::{ChapterKey, Override, PhotoId, Settings, Spread};
 
 #[derive(Debug, Clone, Default)]
 pub struct Decisions {
@@ -10,10 +10,10 @@ pub struct Decisions {
     pub pins: HashSet<PhotoId>,
     pub bans: HashSet<PhotoId>,
     pub heroes: HashSet<PhotoId>,
-    pub chapter_moves: HashMap<PhotoId, String>,
+    pub chapter_moves: HashMap<PhotoId, ChapterKey>,
     pub shot_splits: HashSet<PhotoId>,
     pub locked: BTreeMap<u64, Spread>,
-    pub chapter_spreads: HashMap<String, u32>,
+    pub chapter_spreads: HashMap<ChapterKey, u32>,
     pub texts: BTreeMap<String, String>,
     /// People Overrides, in order; resolved against face clusters by `people::resolve`.
     pub people: Vec<Override>,

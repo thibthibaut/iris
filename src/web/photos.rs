@@ -11,7 +11,7 @@ use axum::{
 };
 use iris_core::{
     decisions::Eligibility,
-    model::{Override, PhotoId, Source},
+    model::{ChapterKey, Override, PersonId, PhotoId, Source},
 };
 use serde::Deserialize;
 
@@ -138,7 +138,7 @@ fn filtered(state: &AppState, filters: &Filters) -> anyhow::Result<(Vec<Tile>, u
         photos.sort_by_key(|photo| rank[&photo.id]);
     }
     if let Ok(person) = filters.person.parse::<i64>()
-        && let Some(person) = snapshot.people.by_anchor(person)
+        && let Some(person) = snapshot.people.by_anchor(PersonId::from(person))
     {
         let faces: HashSet<_> = person.faces.iter().collect();
         let with_person: HashSet<PhotoId> =
@@ -158,7 +158,7 @@ fn filtered(state: &AppState, filters: &Filters) -> anyhow::Result<(Vec<Tile>, u
         .filter(|photo| match filters.chapter.as_str() {
             "" => true,
             "none" => snapshot.chapter_of(photo).is_none(),
-            chapter => snapshot.chapter_of(photo).as_deref() == Some(chapter),
+            chapter => snapshot.chapter_of(photo).as_ref().is_some_and(|key| key.as_str() == chapter),
         })
         .map(|photo| tile(photo, &snapshot, &shot_sizes, &in_album))
         .filter(|tile| match filters.status.as_str() {
@@ -199,13 +199,13 @@ pub async fn page(State(state): State<AppState>, Query(filters): Query<Filters>)
                 .settings
                 .chapters
                 .iter()
-                .map(|c| (c.key.clone(), c.title_fr.clone()))
+                .map(|c| (c.key.as_str().to_owned(), c.title_fr.clone()))
                 .collect(),
             persons: snapshot
                 .people
                 .persons
                 .iter()
-                .filter_map(|p| p.name.clone().map(|name| (p.anchor, name)))
+                .filter_map(|p| p.name.clone().map(|name| (p.anchor.0, name)))
                 .collect(),
             grid: page_of(tiles, &filters, total),
             filters,
@@ -275,7 +275,7 @@ fn load_detail(state: &AppState, id: PhotoId) -> anyhow::Result<Option<Detail>> 
                 name: person.and_then(|p| p.name.clone()).unwrap_or_else(|| {
                     if person.is_some() { "Unnamed".into() } else { "Unknown".into() }
                 }),
-                anchor: person.map(|p| p.anchor),
+                anchor: person.map(|p| p.anchor.0),
                 soft: person.is_some_and(|p| p.soft_faces.contains(&face.id)),
                 small: face.height_frac() < settings.face_min_height_frac,
                 sharpness: face.sharpness.map(|s| format!("{s:.2}")).unwrap_or_default(),
@@ -294,7 +294,7 @@ fn load_detail(state: &AppState, id: PhotoId) -> anyhow::Result<Option<Detail>> 
             .and_then(|key| settings.chapters.iter().find(|c| &c.key == key))
             .map(|c| c.title_fr.clone())
             .unwrap_or_else(|| "—".into()),
-        chapters: settings.chapters.iter().map(|c| (c.key.clone(), c.title_fr.clone())).collect(),
+        chapters: settings.chapters.iter().map(|c| (c.key.as_str().to_owned(), c.title_fr.clone())).collect(),
         is_hero: snapshot.decisions.heroes.contains(&id),
         tile: tile(photo, &snapshot, &shot_sizes, &in_album),
         faces,
@@ -340,14 +340,15 @@ pub async fn act(
                 (Override::Hero { photo: id, on }, format!("{} {name} as Hero", if on { "Marked" } else { "Unmarked" }))
             }
             "chapter" => {
+                let chapter = ChapterKey::from(form.chapter.as_str());
                 let title = decisions
                     .settings
                     .chapters
                     .iter()
-                    .find(|c| c.key == form.chapter)
+                    .find(|c| c.key == chapter)
                     .map(|c| c.title_fr.clone())
                     .ok_or_else(|| anyhow::anyhow!("unknown chapter"))?;
-                (Override::MoveChapter { photo: id, chapter: form.chapter.clone() }, format!("Moved {name} to {title}"))
+                (Override::MoveChapter { photo: id, chapter }, format!("Moved {name} to {title}"))
             }
             "split-shot" => (Override::SplitShot { photo: id }, format!("Took {name} out of its Shot")),
             _ => anyhow::bail!("unknown action {action}"),
