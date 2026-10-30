@@ -85,6 +85,11 @@ impl AlbumState {
         anchors
     }
 
+    /// Whether a counted Face belongs to the Couple.
+    pub fn is_couple_face(&self, face: &FaceRow) -> bool {
+        self.people.person_of_face(face.id).is_some_and(|person| matches!(person.role, Some(Role::Bride | Role::Groom)))
+    }
+
     pub fn couple_anchors(&self) -> HashSet<i64> {
         [Role::Bride, Role::Groom]
             .into_iter()
@@ -93,14 +98,12 @@ impl AlbumState {
     }
 
     fn measurements(&self, photo: &PhotoRecord) -> Measurements {
-        let couple = self.couple_anchors();
         let faces: Vec<&FaceRow> = self.counted_faces(photo.id).collect();
         let biggest = faces.iter().map(|f| f.height_frac()).fold(0.0, f64::max);
         let important = faces
             .iter()
             .filter(|face| {
-                let in_couple = self.people.person_of_face(face.id).is_some_and(|p| couple.contains(&p.anchor));
-                in_couple || face.height_frac() >= biggest * 0.6
+                self.is_couple_face(face) || face.height_frac() >= biggest * 0.6
             })
             .filter_map(|face| face.sharpness)
             .collect();

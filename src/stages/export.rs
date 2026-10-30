@@ -182,9 +182,9 @@ impl Stage for Export {
             ctx.db.add_export(self.edition, version, &pdf.to_string_lossy(), &manifest)?;
 
             // Keep only the latest file per Edition (disk); older versions stay listed.
-            for (_, edition, older, path, _, _) in ctx.db.exports()? {
-                if edition == self.edition && older < version {
-                    let _ = std::fs::remove_file(&path);
+            for export in ctx.db.exports()? {
+                if export.edition == self.edition && export.version < version {
+                    let _ = std::fs::remove_file(&export.path);
                 }
             }
             sink.message(&format!("v{version}: {interior} pages, {} warnings", manifest["problems"].as_array().map_or(0, Vec::len)));

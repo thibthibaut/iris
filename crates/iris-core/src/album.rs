@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     decisions::Decisions,
-    layout::{LayoutShot, MIN_PER_SPREAD, layout_chapter, layout_spread},
+    layout::{LayoutShot, MIN_PER_SPREAD, SpreadLayout, layout_chapter, layout_spread},
     model::{Conflict, EditionDef, PhotoId, Proposal, Spread, SpreadKind},
     select::{Candidate, GroupPick, SelectInput, select},
 };
@@ -140,17 +140,10 @@ fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<S
             locked.iter().filter(|s| s.kind == SpreadKind::Core && s.chapter == chapter.key).map(|s| (*s).clone()).collect();
         chapter_locked.sort_by_key(|s| s.position);
         let title = !chapter_locked.iter().any(|s| s.title);
-        let mut fresh = layout_chapter(&shots, generated[c], title, per_spread).into_iter().enumerate().map(|(i, layout)| Spread {
-            uid: 0,
-            chapter: chapter.key.clone(),
-            kind: SpreadKind::Core,
-            group: None,
-            templates: layout.templates,
-            photos: layout.photos,
-            title: title && i == 0,
-            locked: false,
-            position: 0,
-        });
+        let mut fresh = layout_chapter(&shots, generated[c], title, per_spread)
+            .into_iter()
+            .enumerate()
+            .map(|(i, layout)| generated_spread(&chapter.key, SpreadKind::Core, None, layout, title && i == 0));
         let total = chapter_locked.len() + generated[c];
         let mut chapter_spreads: Vec<Spread> = Vec::new();
         let mut locked_iter = chapter_locked.into_iter().peekable();
@@ -171,17 +164,7 @@ fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<S
                 if shots.len() >= MIN_PER_SPREAD
                     && let Some(layout) = layout_spread(&shots, true)
                 {
-                    chapter_spreads.push(Spread {
-                        uid: 0,
-                        chapter: chapter.key.clone(),
-                        kind: SpreadKind::Group,
-                        group: Some(key.clone()),
-                        templates: layout.templates,
-                        photos: layout.photos,
-                        title: true,
-                        locked: false,
-                        position: 0,
-                    });
+                    chapter_spreads.push(generated_spread(&chapter.key, SpreadKind::Group, Some(key.clone()), layout, true));
                 }
             }
             chapter_spreads.extend(locked.iter().filter(|s| s.kind == SpreadKind::Group).map(|s| (*s).clone()));
@@ -200,6 +183,20 @@ fn build_skipping(input: &AlbumInput, decisions: &Decisions, skipped: &HashSet<S
         alternatives: selection.alternatives,
         unmet_quotas: selection.unmet_quotas.clone(),
         couple_share: selection.couple_share,
+    }
+}
+
+fn generated_spread(chapter: &str, kind: SpreadKind, group: Option<String>, layout: SpreadLayout, title: bool) -> Spread {
+    Spread {
+        uid: 0,
+        chapter: chapter.to_string(),
+        kind,
+        group,
+        templates: layout.templates,
+        photos: layout.photos,
+        title,
+        locked: false,
+        position: 0,
     }
 }
 

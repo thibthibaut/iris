@@ -35,7 +35,7 @@ pub fn layout_shots(state: &AlbumState) -> HashMap<PhotoId, LayoutShot> {
             let faces = state
                 .counted_faces(photo.id)
                 .filter(|face| {
-                    couple.is_empty() || state.people.person_of_face(face.id).is_some_and(|p| couple.contains(&p.anchor)) || face.height_frac() > 0.08
+                    couple.is_empty() || state.is_couple_face(face) || face.height_frac() > 0.08
                 })
                 .map(|face| face.normalized())
                 .collect();
@@ -78,7 +78,7 @@ pub fn album_input(state: &AlbumState, embeddings: &HashMap<PhotoId, Vec<f32>>) 
         let eligible = !banned && (pinned.is_some() || matches!(state.eligibility(photo.id), Eligibility::Eligible | Eligibility::Pinned));
         let couple_face = state
             .counted_faces(photo.id)
-            .filter(|face| state.people.person_of_face(face.id).is_some_and(|p| couple.contains(&p.anchor)))
+            .filter(|face| state.is_couple_face(face))
             .map(|face| face.height_frac())
             .fold(0.0, f64::max);
         candidates.push(Candidate {

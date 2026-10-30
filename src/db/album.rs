@@ -36,6 +36,16 @@ pub struct StageRun {
     pub finished_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExportRecord {
+    pub id: i64,
+    pub edition: String,
+    pub version: i64,
+    pub path: String,
+    pub created_at_ms: i64,
+    pub manifest: serde_json::Value,
+}
+
 impl Database {
     // ---- Overrides -------------------------------------------------------------------
 
@@ -269,21 +279,20 @@ impl Database {
         Ok(())
     }
 
-    /// (id, edition, version, path, created_at_ms, manifest)
-    pub fn exports(&self) -> Result<Vec<(i64, String, i64, String, i64, serde_json::Value)>> {
+    pub fn exports(&self) -> Result<Vec<ExportRecord>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, edition, version, path, created_at_ms, manifest_json FROM exports ORDER BY edition, version DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-            ))
+            Ok(ExportRecord {
+                id: row.get(0)?,
+                edition: row.get(1)?,
+                version: row.get(2)?,
+                path: row.get(3)?,
+                created_at_ms: row.get(4)?,
+                manifest: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().context("failed to read exports")
     }
