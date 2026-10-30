@@ -3,7 +3,7 @@
 mod chapters;
 mod cluster;
 pub mod embed;
-mod export;
+pub(crate) mod export;
 mod faces;
 mod ingest;
 mod quality;

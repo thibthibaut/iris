@@ -141,6 +141,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         .route("/export", get(design::export_page))
         .route("/exports/{id}/download", get(design::download))
         .route("/api/exports/{id}/delete", post(design::delete_export))
+        .route("/api/exports/{id}/keep/{keep}", post(design::set_export_keep))
         .route("/settings", get(pages::settings))
         .route("/api/settings", post(pages::save_setting))
         .route("/api/undo", post(pages::undo))

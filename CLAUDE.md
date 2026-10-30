@@ -62,7 +62,7 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 ### Code review of `17650dc...f3f2533` — remaining findings, in this order
 **Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin and unresolved MoveChapter/People Override Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
-**Missing (Spec):** Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
+**Missing (Spec):** Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving.
 
 **Standards:**
 - CLAUDE.md rule 1: no GUI for Chapter weights/prompts/titles, Groups, Editions, wedding date, `design.body_font`; `Export::all(&["ours", …])` and `HERO_CHAPTERS` hard-code setting keys.
