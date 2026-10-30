@@ -1,4 +1,4 @@
-<div id="editor" data-uid="{{ uid }}" data-edition="{{ edition }}" data-locked="{{ locked }}" data-prev="{% if let Some(p) = prev %}{{ p }}{% endif %}" data-next="{% if let Some(n) = next %}{{ n }}{% endif %}">
+<div id="editor" data-uid="{{ uid }}" data-edition="{{ edition }}" data-locked="{{ locked }}" data-crop-pending="{{ crop_pending }}" data-prev="{% if let Some(p) = prev %}{{ p }}{% endif %}" data-next="{% if let Some(n) = next %}{{ n }}{% endif %}">
   <section class="page-head">
     <div>
       <h1>{{ chapter }}{% if !group.is_empty() %} · {{ group }}{% endif %}</h1>
@@ -17,13 +17,14 @@
         <div class="page-drop left" data-page="0"></div>
         <div class="page-drop right" data-page="1"></div>
         {% for slot in slots %}
-        <div class="slot" data-photo="{{ slot.photo }}" data-drag="slot:{{ slot.photo }}" draggable="true" onclick="selectSlot(this)" title="{{ slot.name }}"
+        <div class="slot" data-photo="{{ slot.photo }}" data-crop-x="{{ slot.crop.x }}" data-crop-y="{{ slot.crop.y }}" data-crop-w="{{ slot.crop.w }}" data-crop-h="{{ slot.crop.h }}" data-drag="slot:{{ slot.photo }}" draggable="true" onclick="selectSlot(this)" title="{{ slot.name }}"
              style="left: {{ slot.left }}%; top: {{ slot.top }}%; width: {{ slot.width }}%; height: {{ slot.height }}%">
           <span class="slot-ppi {% if slot.ppi < 250 %}ppi-bad{% else if slot.ppi < 300 %}ppi-ok{% endif %}" title="Print resolution in this Slot">{{ slot.ppi }} ppi</span>
           {% if slot.pinned %}<span class="slot-badge">📌</span>{% endif %}{% if slot.hero %}<span class="slot-badge">★</span>{% endif %}
         </div>
         {% endfor %}
       </div>
+      {% if crop_pending %}<p class="crop-pending" role="status">Previewing the proposed Crop. The ppi and face warnings below reflect this preview.</p>{% endif %}
       {% if !warnings.is_empty() %}
       <ul class="warnings">{% for w in warnings %}<li>⚠ {{ w }}</li>{% endfor %}</ul>
       {% endif %}
@@ -35,13 +36,17 @@
         <button class="ghost small" data-needs-slot disabled onclick="onSelected('hero')">Hero</button>
         <span class="sep"></span>
         <span class="muted">Crop:</span>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {zoom: 1.15})" title="Zoom in">＋</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {zoom: 0.87})" title="Zoom out">－</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dx: -0.1})">←</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dy: -0.1})">↑</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dy: 0.1})">↓</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop', {dx: 0.1})">→</button>
-        <button class="ghost small" data-needs-slot disabled onclick="onSelected('crop')" title="Face-aware crop">Reset</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({zoom: 1.15})" title="Zoom in">＋</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({zoom: 0.87})" title="Zoom out">－</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({dx: -0.1})">←</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({dy: -0.1})">↑</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({dy: 0.1})">↓</button>
+        <button class="ghost small" data-needs-slot disabled onclick="adjustCrop({dx: 0.1})">→</button>
+        <button class="ghost small" data-needs-slot disabled onclick="previewCrop({reset: true})" title="Face-aware crop">Reset</button>
+        {% if crop_pending %}
+        <span class="sep"></span><button class="primary small" onclick="applyCrop()">Apply Crop</button>
+        <button class="ghost small" onclick="cancelCrop()">Cancel</button>
+        {% endif %}
       </div>
     </div>
     <aside class="editor-side">

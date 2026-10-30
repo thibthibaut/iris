@@ -135,6 +135,7 @@ pub async fn serve(config: Config, host: String, port: u16) -> Result<()> {
         .route("/preview/{uid}", get(album::preview_image))
         .route("/spread/{uid}", get(album::spread_page))
         .route("/api/spread/{uid}/edit", post(album::edit))
+        .route("/api/spread/{uid}/crop-preview", post(album::crop_preview))
         .route("/api/spread/{uid}/tray/{photo}", get(album::tray))
         .route("/design", get(design::page))
         .route("/api/text", post(design::save_text))
