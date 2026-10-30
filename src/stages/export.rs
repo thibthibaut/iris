@@ -31,13 +31,17 @@ pub struct Export {
 }
 
 impl Export {
+    pub fn for_edition(edition: &str) -> Self {
+        Self {
+            edition: Box::leak(edition.to_string().into_boxed_str()),
+            name: Box::leak(format!("export:{edition}").into_boxed_str()),
+        }
+    }
+
     pub fn all(editions: &[&str]) -> Vec<Self> {
         editions
             .iter()
-            .map(|edition| Self {
-                edition: Box::leak(edition.to_string().into_boxed_str()),
-                name: Box::leak(format!("export:{edition}").into_boxed_str()),
-            })
+            .map(|edition| Self::for_edition(edition))
             .collect()
     }
 }

@@ -32,6 +32,7 @@ struct DesignPage {
     rows: Vec<TextRow>,
     design: Design,
     fonts: Vec<&'static str>,
+    body_fonts: Vec<&'static str>,
     arabic_fonts: Vec<&'static str>,
     cover_photo: String,
     colors: Vec<(&'static str, &'static str, String)>,
@@ -74,6 +75,7 @@ pub async fn page(State(state): State<AppState>) -> WebResult<Html<String>> {
             },
             design: settings.design.clone(),
             fonts: vec!["Righteous", "Bungee", "Monoton", "Shrikhand", "Playfair Display"],
+            body_fonts: vec!["Playfair Display", "Righteous", "Bungee", "Monoton", "Shrikhand"],
             arabic_fonts: vec!["Lalezar", "Reem Kufi", "Aref Ruqaa", "Noto Naskh Arabic"],
             cover_photo: snapshot.decisions.texts.get("cover.photo").cloned().unwrap_or_default(),
         })
