@@ -86,6 +86,11 @@ impl AlbumState {
         anchors
     }
 
+    /// Whether a counted Face belongs to the Couple, using the precomputed Couple anchors.
+    pub fn is_couple_face(&self, face: &FaceRow, couple_anchors: &HashSet<i64>) -> bool {
+        self.people.person_of_face(face.id).is_some_and(|person| couple_anchors.contains(&person.anchor))
+    }
+
     pub fn couple_anchors(&self) -> HashSet<i64> {
         Self::couple_anchors_for(&self.people)
     }
@@ -103,8 +108,7 @@ impl AlbumState {
         let important = faces
             .iter()
             .filter(|face| {
-                let in_couple = self.people.person_of_face(face.id).is_some_and(|p| couple_anchors.contains(&p.anchor));
-                in_couple || face.height_frac() >= biggest * 0.6
+                self.is_couple_face(face, couple_anchors) || face.height_frac() >= biggest * 0.6
             })
             .filter_map(|face| face.sharpness)
             .collect();

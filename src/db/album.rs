@@ -36,6 +36,16 @@ pub struct StageRun {
     pub finished_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExportRecord {
+    pub id: i64,
+    pub edition: String,
+    pub version: i64,
+    pub path: String,
+    pub created_at_ms: i64,
+    pub manifest: serde_json::Value,
+}
+
 impl Database {
     // ---- Overrides -------------------------------------------------------------------
 
@@ -318,21 +328,20 @@ impl Database {
         Ok(paths)
     }
 
-    /// (id, edition, version, path, created_at_ms, manifest)
-    pub fn exports(&self) -> Result<Vec<(i64, String, i64, String, i64, serde_json::Value)>> {
+    pub fn exports(&self) -> Result<Vec<ExportRecord>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, edition, version, path, created_at_ms, manifest_json FROM exports ORDER BY edition, version DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-            ))
+            Ok(ExportRecord {
+                id: row.get(0)?,
+                edition: row.get(1)?,
+                version: row.get(2)?,
+                path: row.get(3)?,
+                created_at_ms: row.get(4)?,
+                manifest: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().context("failed to read exports")
     }
@@ -393,11 +402,11 @@ mod export_tests {
         db.add_export("ours", 1, "/exports/v1.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
         db.add_export("ours", 2, "/exports/v2.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
         db.add_export("ours", 3, "/exports/v3.pdf", &serde_json::json!({ "keep_version": false })).unwrap();
-        let version_one = db.exports().unwrap().into_iter().find(|row| row.2 == 1).unwrap().0;
+        let version_one = db.exports().unwrap().into_iter().find(|row| row.version == 1).unwrap().id;
 
         assert!(db.set_export_keep(version_one, true).unwrap());
         let removed_paths = db.prune_exports("ours", 3).unwrap();
-        let remaining: Vec<i64> = db.exports().unwrap().into_iter().map(|row| row.2).collect();
+        let remaining: Vec<i64> = db.exports().unwrap().into_iter().map(|row| row.version).collect();
 
         assert_eq!(removed_paths, vec!["/exports/v2.pdf"]);
         assert_eq!(remaining, vec![3, 1]);

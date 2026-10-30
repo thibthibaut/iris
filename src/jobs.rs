@@ -129,7 +129,7 @@ pub fn stage_status(db: &Database, stages: &[Arc<dyn Stage>], stage: &dyn Stage,
     match &run {
         None => reason = Some("never run".to_string()),
         Some(run) if run.version != stage.version() => reason = Some("new version".into()),
-        Some(run) if run.settings_hash != hash(&stage.staleness_key(db, decisions)?) => {
+        Some(run) if run.settings_hash != fingerprint(&stage.staleness_key(db, decisions)?) => {
             reason = Some("your changes since".into());
         }
         Some(run) => {
@@ -162,16 +162,16 @@ pub fn stage_status(db: &Database, stages: &[Arc<dyn Stage>], stage: &dyn Stage,
     })
 }
 
-pub fn hash(value: &str) -> String {
+pub fn fingerprint(value: &str) -> String {
     blake3::hash(value.as_bytes()).to_hex()[..16].to_string()
 }
 
 /// Runs one stage to completion and records it.
 pub fn run_stage(ctx: &StageCtx, stage: &dyn Stage, sink: &dyn ProgressSink, cancel: &CancelToken) -> Result<()> {
     info!(stage = stage.name(), "stage started");
-    let settings_hash = hash(&stage.staleness_key(&ctx.db, &ctx.decisions)?);
+    let settings_fingerprint = fingerprint(&stage.staleness_key(&ctx.db, &ctx.decisions)?);
     stage.run(ctx, sink, cancel)?;
-    ctx.db.record_stage_run(stage.name(), stage.version(), &settings_hash)?;
+    ctx.db.record_stage_run(stage.name(), stage.version(), &settings_fingerprint)?;
     info!(stage = stage.name(), "stage finished");
     Ok(())
 }

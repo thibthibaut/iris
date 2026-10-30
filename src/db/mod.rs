@@ -8,7 +8,7 @@ use std::{path::Path, sync::Mutex};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-pub use album::{JobRow, OverrideRow, StageRun};
+pub use album::{ExportRecord, JobRow, OverrideRow, StageRun};
 pub use faces::{FaceRow, NewFace, SavedCluster};
 pub use photos::{IngestResult, PhotoFilter, PhotoRecord, QualityResult, ScannedPhoto};
 pub use schema::{CLIP_EMBEDDING_DIMENSIONS, FACE_EMBEDDING_DIMENSIONS};
