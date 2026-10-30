@@ -1,5 +1,7 @@
 //! Text & design (titles in French and Arabic, cover, colours, fonts) and Export.
 
+use std::collections::HashMap;
+
 use askama::Template;
 use axum::{
     body::Body,
@@ -111,6 +113,8 @@ pub struct ExportCard {
 pub struct ExportVersion {
     pub id: i64,
     pub version: i64,
+    pub keep: bool,
+    pub fresh: bool,
     pub when: String,
     pub exists: bool,
     pub size: String,
@@ -135,8 +139,10 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
         let settings = &snapshot.decisions.settings;
         let album = current(&db, &snapshot)?;
         let exports = db.exports()?;
-        let current_uids: Vec<String> = Vec::new();
-        let _ = current_uids;
+        let mut current_hashes = HashMap::new();
+        for edition in &settings.editions {
+            current_hashes.insert(edition.key.clone(), crate::stages::export::album_state_hash(&db, &edition.key, &snapshot)?);
+        }
         let cards = settings
             .editions
             .iter()
@@ -152,9 +158,12 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
                         let exported: Vec<String> = manifest["spreads"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
                         let changed = spreads.iter().filter(|uid| !exported.contains(uid)).count() + exported.iter().filter(|uid| !spreads.contains(uid)).count();
                         let metadata = std::fs::metadata(path).ok();
+                        let fresh = manifest["album_state_hash"].as_str() == current_hashes.get(&edition.key).map(String::as_str);
                         ExportVersion {
                             id: *id,
                             version: *version,
+                            keep: manifest["keep_version"].as_bool().unwrap_or(false),
+                            fresh,
                             when: ago(*created),
                             exists: metadata.is_some(),
                             size: metadata.map(|m| super::pipeline::human_bytes(m.len())).unwrap_or_default(),
@@ -210,6 +219,16 @@ pub async fn delete_export(State(state): State<AppState>, Path(id): Path<i64>) -
         if let Some(path) = state.db()?.delete_export(id)? {
             let _ = std::fs::remove_file(path);
         }
+        state.jobs().notify("export");
+        Ok(())
+    })
+    .await?;
+    Ok(([("HX-Refresh", "true")], Html(String::new())).into_response())
+}
+
+pub async fn set_export_keep(State(state): State<AppState>, Path((id, keep)): Path<(i64, bool)>) -> WebResult<Response> {
+    blocking(move || {
+        state.db()?.set_export_keep(id, keep)?;
         state.jobs().notify("export");
         Ok(())
     })

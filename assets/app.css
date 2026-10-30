@@ -310,6 +310,7 @@ h2.inline { margin: 0; }
 .slot-badge { position: absolute; top: 3px; right: 3px; background: #fff; border-radius: 999px; padding: 0 4px; font-size: 12px; }
 .slot-tools { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .slot-tools .sep { width: 12px; }
+.crop-pending { margin: 8px 0 0; color: var(--emerald); font-size: 13px; font-weight: 600; }
 .warnings { background: #fdf1cf; border-radius: 8px; padding: 8px 12px 8px 28px; font-size: 13px; color: #6b4e00; }
 .editor-side { display: grid; gap: 12px; position: sticky; top: calc(var(--masthead-h, 64px) + 12px); }
 .side-box { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; }

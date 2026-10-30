@@ -60,9 +60,9 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - A Proposal is stored at build time; the shown album is it + Locks + current Decisions. Check Conflicts against the shown album (`iris_core::album::conflicts`), not the stored one.
 
 ### Code review of `17650dc...f3f2533` — remaining findings, in this order
-**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
+**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin and unresolved MoveChapter/People Override Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
-**Missing (Spec):** Conflicts beyond Ban/Pin (e.g. a MoveChapter or People Override that no longer resolves); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving; export manifest lacks an album-state hash and a "keep this version" option.
+**Missing (Spec):** none of the listed findings remain: unresolved Override Conflicts, the settings editor (including Groups), Hero resolution/crop feedback, and export freshness/version retention are implemented.
 
 **Standards:**
 - CLI `Export::all(&["ours", …])` keeps its default export keys; the GUI resolves added Editions dynamically. `HERO_CHAPTERS` still hard-codes Chapter keys.
