@@ -22,12 +22,24 @@ impl Source {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
-        if value == "photographer" {
-            Self::Photographer
-        } else {
-            Self::Guest
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        match value {
+            "photographer" => Ok(Self::Photographer),
+            "guest" => Ok(Self::Guest),
+            _ => Err("unknown photo source"),
         }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::Source;
+
+    #[test]
+    fn parses_known_sources_and_rejects_unknown_values() {
+        assert_eq!(Source::parse("photographer"), Ok(Source::Photographer));
+        assert_eq!(Source::parse("guest"), Ok(Source::Guest));
+        assert!(Source::parse("archive").is_err());
     }
 }
 
