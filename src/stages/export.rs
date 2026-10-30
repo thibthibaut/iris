@@ -14,7 +14,7 @@ use libvips::{VipsImage, ops};
 use serde::Serialize;
 
 use crate::{
-    album::{current, layout_shots, renderer, unplaced_pins, warnings},
+    album::{current, layout_shots, override_conflict_notices, renderer, unplaced_pins, warnings},
     image_io::vips_error,
     jobs::{CancelToken, ProgressSink, Stage, StageCtx},
     preflight::{self, Problem},
@@ -158,13 +158,17 @@ impl Stage for Export {
                 for (text, language) in [(fr, "French"), (ar, "Tunisian Arabic")] {
                     if text.trim().is_empty() {
                         let message = format!("title in {language} missing (Text & design)");
-                        problems.push(Problem { spread: Some(spread.uid), message });
+                        problems.push(Problem { spread: Some(spread.uid), href: None, message });
                     }
                 }
             }
             for spread in &spreads {
-                problems.extend(warnings(&state, spread).into_iter().map(|message| Problem { spread: Some(spread.uid), message }));
+                problems.extend(warnings(&state, spread).into_iter().map(|message| Problem { spread: Some(spread.uid), href: None, message }));
             }
+            problems.extend(override_conflict_notices(&state).into_iter().map(|notice| match notice.href {
+                Some(href) => Problem::linked(href, notice.message),
+                None => Problem::album(notice.message),
+            }));
             problems.extend(
                 unplaced_pins(&state, &album).into_iter().map(|(_, name)| Problem::album(format!("{name}: Pinned but not in the album"))),
             );

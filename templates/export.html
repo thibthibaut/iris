@@ -29,7 +29,7 @@
           {% if v.fresh %} · <span class="chip chip-ok">up to date</span>{% else %} · <span class="chip chip-warn">{% if let Some(changed) = v.changed %}{% if *changed > 0 %}{{ changed }} Spreads changed since{% else %}export inputs changed{% endif %}{% else %}export inputs changed{% endif %}</span>{% endif %}
         </div>
         {% if v.problems.is_empty() %}<p class="small-print ok-badge">✓ Preflight passed</p>{% else %}
-        <details><summary class="bad">{{ v.problems.len() }} preflight warnings</summary><ul class="small-print">{% for p in v.problems %}<li>{% if let Some(uid) = p.spread %}<a href="/spread/{{ uid }}?edition={{ card.edition.key }}">{{ p.message }}</a>{% else %}{{ p.message }}{% endif %}</li>{% endfor %}</ul></details>{% endif %}
+        <details><summary class="bad">{{ v.problems.len() }} preflight warnings</summary><ul class="small-print">{% for p in v.problems %}<li>{% if let Some(href) = p.href %}<a href="{{ href }}">{{ p.message }}</a>{% else %}{% if let Some(uid) = p.spread %}<a href="/spread/{{ uid }}?edition={{ card.edition.key }}">{{ p.message }}</a>{% else %}{{ p.message }}{% endif %}{% endif %}</li>{% endfor %}</ul></details>{% endif %}
         <div class="toolbar">
           {% if v.exists %}<a class="button ghost" href="/exports/{{ v.id }}/download">Download PDF</a>{% else %}<span class="muted small-print">File removed to save space</span>{% endif %}
           {% if v.keep %}<button class="ghost small" hx-post="/api/exports/{{ v.id }}/keep/false" hx-swap="none">Stop keeping</button>{% else %}<button class="ghost small" hx-post="/api/exports/{{ v.id }}/keep/true" hx-swap="none">Keep this version</button>{% endif %}

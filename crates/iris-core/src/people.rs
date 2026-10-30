@@ -1,6 +1,6 @@
 //! Persons = face clusters with the People Overrides replayed on top.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::model::{FaceId, Override, PhotoId, Role};
 
@@ -50,6 +50,7 @@ impl People {
 /// Structural Overrides (merge, split, assign, remove) are replayed first, in order; then
 /// attributes (name, role, Groups, Quota) land on whichever Person holds their face.
 pub fn resolve(faces: &[FaceMembership], ops: &[Override]) -> People {
+    let known_faces: HashSet<FaceId> = faces.iter().map(|face| face.face).collect();
     let mut label: HashMap<FaceId, i64> = faces
         .iter()
         .filter_map(|face| face.cluster.map(|cluster| (face.face, cluster)))
@@ -73,17 +74,25 @@ pub fn resolve(faces: &[FaceMembership], ops: &[Override]) -> People {
             Override::SplitFaces { faces } => {
                 let new_label = fresh_label();
                 for face in faces {
-                    label.insert(*face, new_label);
-                    soft.remove(face);
+                    if known_faces.contains(face) {
+                        label.insert(*face, new_label);
+                        soft.remove(face);
+                    }
                 }
             }
             Override::AssignFace { face, to_face } => {
-                let target = label.get(to_face).copied();
-                match target {
-                    Some(target) => label.insert(*face, target),
-                    None => label.insert(*face, fresh_label()),
-                };
-                soft.remove(face);
+                if known_faces.contains(face) && known_faces.contains(to_face) {
+                    let target = match label.get(to_face).copied() {
+                        Some(target) => target,
+                        None => {
+                            let target = fresh_label();
+                            label.insert(*to_face, target);
+                            target
+                        }
+                    };
+                    label.insert(*face, target);
+                    soft.remove(face);
+                }
             }
             Override::RemoveFace { face } => {
                 label.remove(face);
@@ -219,5 +228,23 @@ mod tests {
         assert_eq!(named(&people, "Emna").faces, vec![1]);
         assert_eq!(named(&people, "Emna's sister").faces, vec![3]);
         assert!(people.person_of_face(2).is_none());
+    }
+
+    #[test]
+    fn overrides_for_missing_faces_do_not_create_phantom_people() {
+        let run = faces(&[(1, 10), (2, 11)]);
+        let ops = vec![
+            Override::SplitFaces { faces: vec![99] },
+            Override::AssignFace { face: 100, to_face: 1 },
+            Override::AssignFace { face: 1, to_face: 101 },
+        ];
+
+        let people = resolve(&run, &ops);
+
+        assert_eq!(people.persons.len(), 2);
+        assert!(people.by_anchor(99).is_none());
+        assert!(people.by_anchor(100).is_none());
+        assert!(people.by_anchor(101).is_none());
+        assert!(people.person_of_face(1).is_some());
     }
 }

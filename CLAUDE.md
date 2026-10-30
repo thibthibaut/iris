@@ -60,9 +60,9 @@ A GUI-first wedding album generator. Read `PLAN.md` for the goal, `CONTEXT.md` f
 - A Proposal is stored at build time; the shown album is it + Locks + current Decisions. Check Conflicts against the shown album (`iris_core::album::conflicts`), not the stored one.
 
 ### Code review of `17650dc...f3f2533` — remaining findings, in this order
-**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
+**Print correctness (Spec):** done (page numbers, bleed Crop, Ban/Pin and unresolved MoveChapter/People Override Conflicts, Group budget, real PDF preflight + golden test in `src/preflight.rs`).
 
-**Missing (Spec):** Conflicts beyond Ban/Pin (e.g. a MoveChapter or People Override that no longer resolves); Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving.
+**Missing (Spec):** Groups renamable/addable in the GUI (§6); Hero Slots skip the 250 ppi shrink and crop zoom only warns after saving.
 
 **Standards:**
 - CLAUDE.md rule 1: no GUI for Chapter weights/prompts/titles, Groups, Editions, wedding date, `design.body_font`; `Export::all(&["ours", …])` and `HERO_CHAPTERS` hard-code setting keys.

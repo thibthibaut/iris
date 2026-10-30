@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, render, toast};
 use crate::{
-    album::{current, layout_shots, page_numbers, preview, unplaced_pins, warnings},
+    album::{OverrideConflictNotice, current, layout_shots, override_conflict_notices, page_numbers, preview, unplaced_pins, warnings},
     db::Database,
     jobs::stage_status,
     state::AlbumState,
@@ -61,6 +61,7 @@ struct AlbumPage {
     unmet: Vec<(String, u32, u32)>,
     /// Pinned Photos with no room in the album.
     pins: Vec<(PhotoId, String)>,
+    override_conflicts: Vec<OverrideConflictNotice>,
     stale: Option<String>,
     building: bool,
 }
@@ -85,6 +86,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
     let mut couple_share = None;
     let mut unmet = Vec::new();
     let mut pins = Vec::new();
+    let override_conflicts = override_conflict_notices(&snapshot);
     let mut pages = 0;
     if let Some(album) = &album {
         let spreads = edition_spreads(album, &edition);
@@ -138,6 +140,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
         couple_target: settings.couple_share,
         unmet,
         pins,
+        override_conflicts,
         stale: status.stale_reason,
         building: state.jobs().is_busy("select"),
         edition,
