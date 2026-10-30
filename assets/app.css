@@ -195,6 +195,14 @@ fieldset.wide { grid-column: 1 / -1; }
 legend { font-family: "Righteous", sans-serif; font-size: 16px; padding: 0; float: left; margin-bottom: 4px; }
 fieldset label { display: grid; gap: 3px; font-size: 14px; }
 fieldset label small { color: var(--muted); font-size: 12px; }
+.definition-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; }
+.definition-form { display: grid; grid-template-columns: minmax(100px, .7fr) repeat(2, minmax(150px, 1fr)); gap: 8px 12px; align-items: end; min-width: 0; }
+.definition-form > strong { align-self: center; color: var(--muted); font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }
+.definition-form label { min-width: 0; }
+.definition-form textarea { min-height: 66px; }
+.chapter-setting { grid-template-columns: minmax(120px, .7fr) repeat(2, minmax(180px, 1fr)); }
+.chapter-setting label:nth-of-type(4) { grid-column: 2; }
+.definition-row > form:not(.definition-form) { align-self: end; }
 
 /* Toasts */
 #toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: grid; gap: 6px; z-index: 50; }
@@ -209,6 +217,9 @@ fieldset label small { color: var(--muted); font-size: 12px; }
   .stage { grid-template-columns: 1fr; }
   .stage-num { display: none; }
   .settings { grid-template-columns: 1fr; }
+  .definition-row { grid-template-columns: 1fr; }
+  .definition-form, .chapter-setting { grid-template-columns: 1fr; }
+  .chapter-setting label:nth-of-type(4) { grid-column: auto; }
 }
 
 /* People */
@@ -299,6 +310,7 @@ h2.inline { margin: 0; }
 .slot-badge { position: absolute; top: 3px; right: 3px; background: #fff; border-radius: 999px; padding: 0 4px; font-size: 12px; }
 .slot-tools { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .slot-tools .sep { width: 12px; }
+.crop-pending { margin: 8px 0 0; color: var(--emerald); font-size: 13px; font-weight: 600; }
 .warnings { background: #fdf1cf; border-radius: 8px; padding: 8px 12px 8px 28px; font-size: 13px; color: #6b4e00; }
 .editor-side { display: grid; gap: 12px; position: sticky; top: calc(var(--masthead-h, 64px) + 12px); }
 .side-box { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; }

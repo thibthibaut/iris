@@ -33,6 +33,7 @@ impl AlbumState {
             .map(|face| FaceMembership { face: face.id, photo: face.photo_id, cluster: face.cluster, soft: face.soft })
             .collect();
         let people = iris_core::people::resolve(&memberships, &decisions.people);
+        let couple_anchors = Self::couple_anchors_for(&people);
         let photos = db.all_photos()?;
         let by_id = photos.iter().enumerate().map(|(i, photo)| (photo.id, i)).collect();
         let mut faces_by_photo: HashMap<PhotoId, Vec<usize>> = HashMap::new();
@@ -49,7 +50,7 @@ impl AlbumState {
             .photos
             .iter()
             .map(|photo| {
-                let mut evaluation = evaluate(&state.measurements(photo), &state.decisions.settings.gate);
+                let mut evaluation = evaluate(&state.measurements(photo, &couple_anchors), &state.decisions.settings.gate);
                 if photo.blake3_hash.is_none() {
                     evaluation.rejected = Some("not read yet".into());
                 }
@@ -85,25 +86,29 @@ impl AlbumState {
         anchors
     }
 
-    /// Whether a counted Face belongs to the Couple.
-    pub fn is_couple_face(&self, face: &FaceRow) -> bool {
-        self.people.person_of_face(face.id).is_some_and(|person| matches!(person.role, Some(Role::Bride | Role::Groom)))
+    /// Whether a counted Face belongs to the Couple, using the precomputed Couple anchors.
+    pub fn is_couple_face(&self, face: &FaceRow, couple_anchors: &HashSet<i64>) -> bool {
+        self.people.person_of_face(face.id).is_some_and(|person| couple_anchors.contains(&person.anchor))
     }
 
     pub fn couple_anchors(&self) -> HashSet<i64> {
+        Self::couple_anchors_for(&self.people)
+    }
+
+    fn couple_anchors_for(people: &People) -> HashSet<i64> {
         [Role::Bride, Role::Groom]
             .into_iter()
-            .filter_map(|role| self.people.with_role(role).map(|p| p.anchor))
+            .filter_map(|role| people.with_role(role).map(|p| p.anchor))
             .collect()
     }
 
-    fn measurements(&self, photo: &PhotoRecord) -> Measurements {
+    fn measurements(&self, photo: &PhotoRecord, couple_anchors: &HashSet<i64>) -> Measurements {
         let faces: Vec<&FaceRow> = self.counted_faces(photo.id).collect();
         let biggest = faces.iter().map(|f| f.height_frac()).fold(0.0, f64::max);
         let important = faces
             .iter()
             .filter(|face| {
-                self.is_couple_face(face) || face.height_frac() >= biggest * 0.6
+                self.is_couple_face(face, couple_anchors) || face.height_frac() >= biggest * 0.6
             })
             .filter_map(|face| face.sharpness)
             .collect();
@@ -131,5 +136,74 @@ impl AlbumState {
 
     pub fn is_photographer(&self, photo: &PhotoRecord) -> bool {
         photo.source == Some(Source::Photographer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iris_core::{model::Override, people::FaceMembership};
+
+    #[test]
+    fn measurements_keep_small_couple_faces_important() {
+        let memberships = [
+            FaceMembership { face: 10, photo: 1, cluster: Some(1), soft: false },
+            FaceMembership { face: 11, photo: 1, cluster: Some(2), soft: false },
+            FaceMembership { face: 12, photo: 1, cluster: Some(3), soft: false },
+        ];
+        let people = iris_core::people::resolve(
+            &memberships,
+            &[Override::SetRole { face: 10, role: Some(Role::Bride) }],
+        );
+        let faces = vec![
+            FaceRow {
+                id: 10,
+                photo_id: 1,
+                bbox: [0.0, 0.0, 100.0, 100.0],
+                detection_score: 1.0,
+                sharpness: Some(3.0),
+                photo_width: 1000,
+                photo_height: 1000,
+                cluster: Some(1),
+                soft: false,
+            },
+            FaceRow {
+                id: 11,
+                photo_id: 1,
+                bbox: [0.0, 0.0, 500.0, 500.0],
+                detection_score: 1.0,
+                sharpness: Some(7.0),
+                photo_width: 1000,
+                photo_height: 1000,
+                cluster: Some(2),
+                soft: false,
+            },
+            FaceRow {
+                id: 12,
+                photo_id: 1,
+                bbox: [0.0, 0.0, 100.0, 100.0],
+                detection_score: 1.0,
+                sharpness: Some(11.0),
+                photo_width: 1000,
+                photo_height: 1000,
+                cluster: Some(3),
+                soft: false,
+            },
+        ];
+        let state = AlbumState {
+            decisions: Decisions::default(),
+            people,
+            faces,
+            photos: Vec::new(),
+            by_id: HashMap::new(),
+            evaluations: HashMap::new(),
+            faces_by_photo: HashMap::from([(1, vec![0, 1, 2])]),
+            reviews: HashMap::new(),
+        };
+
+        let photo = PhotoRecord { id: 1, ..PhotoRecord::default() };
+        let measurements = state.measurements(&photo, &state.couple_anchors());
+
+        assert_eq!(measurements.important_face_sharpness, vec![3.0, 7.0]);
     }
 }

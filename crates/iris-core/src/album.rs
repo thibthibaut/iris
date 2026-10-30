@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     decisions::Decisions,
     layout::{LayoutShot, MIN_PER_SPREAD, SpreadLayout, layout_chapter, layout_spread},
-    model::{Conflict, EditionDef, PhotoId, Proposal, Spread, SpreadKind},
+    model::{Conflict, EditionDef, Override, PeopleOverrideKind, PhotoId, Proposal, Spread, SpreadKind},
+    people::FaceMembership,
     select::{Candidate, GroupPick, SelectInput, select},
 };
 
@@ -200,13 +201,92 @@ fn generated_spread(chapter: &str, kind: SpreadKind, group: Option<String>, layo
     }
 }
 
-/// Overrides the album as shown cannot honour (Ban > Pin > Rejected).
-pub fn conflicts(album: &Proposal, decisions: &Decisions) -> Vec<Conflict> {
+/// Overrides with missing Photo, Chapter, face, Person, or Group references.
+pub fn override_conflicts(decisions: &Decisions, photos: &HashSet<PhotoId>, faces: &[FaceMembership]) -> Vec<Conflict> {
+    let known_faces: HashSet<_> = faces.iter().map(|face| face.face).collect();
+    let people = crate::people::resolve(faces, &decisions.people);
+    let mut found = Vec::new();
+
+    let mut moves: Vec<_> = decisions.chapter_moves.iter().collect();
+    moves.sort_by_key(|(photo, _)| **photo);
+    for (&photo, chapter) in moves {
+        if !photos.contains(&photo) {
+            found.push(Conflict::MoveChapterPhotoMissing { photo, chapter: chapter.clone() });
+        }
+        if decisions.settings.chapter_index(chapter).is_none() {
+            found.push(Conflict::MoveChapterChapterMissing { photo, chapter: chapter.clone() });
+        }
+    }
+
+    for op in &decisions.people {
+        match op {
+            Override::NamePerson { face, .. } => check_attribute_face(*face, PeopleOverrideKind::Name, &known_faces, &people, &mut found),
+            Override::SetRole { face, .. } => check_attribute_face(*face, PeopleOverrideKind::Role, &known_faces, &people, &mut found),
+            Override::SetGroup { face, group, .. } => {
+                check_attribute_face(*face, PeopleOverrideKind::Group, &known_faces, &people, &mut found);
+                if !decisions.settings.groups.iter().any(|item| item.key.as_str() == group.as_str()) {
+                    found.push(Conflict::PeopleOverrideGroupMissing { face: *face, group: group.clone() });
+                }
+            }
+            Override::SetQuota { face, .. } => check_attribute_face(*face, PeopleOverrideKind::Quota, &known_faces, &people, &mut found),
+            Override::MergePersons { face, into_face } => {
+                check_referenced_face(*face, PeopleOverrideKind::Merge, &known_faces, &mut found);
+                if known_faces.contains(face) && people.person_of_face(*face).is_none() {
+                    found.push(Conflict::PeopleOverridePersonMissing { operation: PeopleOverrideKind::Merge, face: *face });
+                }
+                if !known_faces.contains(into_face) {
+                    found.push(Conflict::PeopleOverrideTargetMissing { operation: PeopleOverrideKind::Merge, face: *face, target: *into_face });
+                } else if people.person_of_face(*into_face).is_none() {
+                    found.push(Conflict::PeopleOverridePersonMissing { operation: PeopleOverrideKind::Merge, face: *into_face });
+                }
+            }
+            Override::SplitFaces { faces } => {
+                for &face in faces {
+                    check_referenced_face(face, PeopleOverrideKind::Split, &known_faces, &mut found);
+                }
+            }
+            Override::AssignFace { face, to_face } => {
+                check_referenced_face(*face, PeopleOverrideKind::Assign, &known_faces, &mut found);
+                if !known_faces.contains(to_face) {
+                    found.push(Conflict::PeopleOverrideTargetMissing { operation: PeopleOverrideKind::Assign, face: *face, target: *to_face });
+                }
+            }
+            Override::RemoveFace { face } => check_referenced_face(*face, PeopleOverrideKind::Remove, &known_faces, &mut found),
+            _ => {}
+        }
+    }
+
+    found
+}
+
+fn check_referenced_face(face: i64, operation: PeopleOverrideKind, known_faces: &HashSet<i64>, found: &mut Vec<Conflict>) {
+    if !known_faces.contains(&face) {
+        found.push(Conflict::PeopleOverrideFaceMissing { operation, face });
+    }
+}
+
+fn check_attribute_face(
+    face: i64,
+    operation: PeopleOverrideKind,
+    known_faces: &HashSet<i64>,
+    people: &crate::people::People,
+    found: &mut Vec<Conflict>,
+) {
+    if !known_faces.contains(&face) {
+        check_referenced_face(face, operation, known_faces, found);
+    } else if people.person_of_face(face).is_none() {
+        found.push(Conflict::PeopleOverridePersonMissing { operation, face });
+    }
+}
+
+/// Overrides the album as shown cannot honour (Ban > Pin > Rejected), or no longer resolve.
+pub fn conflicts(album: &Proposal, decisions: &Decisions, photos: &HashSet<PhotoId>, faces: &[FaceMembership]) -> Vec<Conflict> {
     let mut found: Vec<Conflict> = album.spreads.iter().flat_map(|s| spread_conflicts(s, decisions)).collect();
     let placed: HashSet<PhotoId> = album.spreads.iter().flat_map(|s| s.photos.iter().map(|p| p.photo)).collect();
     let mut pins: Vec<PhotoId> = decisions.pins.iter().copied().filter(|p| !placed.contains(p) && !decisions.bans.contains(p)).collect();
     pins.sort_unstable();
     found.extend(pins.into_iter().map(|photo| Conflict::PinNotPlaced { photo }));
+    found.extend(override_conflicts(decisions, photos, faces));
     found
 }
 
@@ -215,12 +295,20 @@ pub fn spread_conflicts(spread: &Spread, decisions: &Decisions) -> Vec<Conflict>
     if !spread.locked {
         return Vec::new();
     }
-    spread
-        .photos
-        .iter()
-        .filter(|p| decisions.bans.contains(&p.photo))
-        .map(|p| Conflict::BannedOnLockedSpread { photo: p.photo, spread: spread.uid })
-        .collect()
+    let mut found = Vec::new();
+    for placed in &spread.photos {
+        if decisions.bans.contains(&placed.photo) {
+            found.push(Conflict::BannedOnLockedSpread { photo: placed.photo, spread: spread.uid });
+        }
+        if spread.kind == SpreadKind::Core
+            && let Some(chapter) = decisions.chapter_moves.get(&placed.photo)
+            && decisions.settings.chapter_index(chapter).is_some()
+            && chapter != &spread.chapter
+        {
+            found.push(Conflict::MoveChapterOnLockedSpread { photo: placed.photo, spread: spread.uid, chapter: chapter.clone() });
+        }
+    }
+    found
 }
 
 /// A stable identity from what the Spread shows.
@@ -252,7 +340,7 @@ pub fn edition_pages(proposal: &Proposal, edition: &EditionDef) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Override, Settings};
+    use crate::model::Settings;
 
     fn input() -> AlbumInput {
         let mut input = AlbumInput::default();
@@ -293,6 +381,10 @@ mod tests {
         ];
         overrides.extend_from_slice(extra);
         Decisions::replay(&overrides)
+    }
+
+    fn all_photos() -> HashSet<PhotoId> {
+        (1..=60).collect()
     }
 
     #[test]
@@ -355,10 +447,63 @@ mod tests {
         input.candidates.iter_mut().filter(|c| c.photo == banned).for_each(|c| c.eligible = false);
 
         let album = build(&input, &decisions);
-        let found = conflicts(&album, &decisions);
+        let found = conflicts(&album, &decisions, &all_photos(), &[]);
 
         assert!(found.contains(&Conflict::BannedOnLockedSpread { photo: banned, spread: locked.uid }), "{found:?}");
         assert!(found.contains(&Conflict::PinNotPlaced { photo: pinned }), "{found:?}");
         assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn chapter_moves_with_missing_photos_or_chapters_are_reported() {
+        let decisions = decisions(&[
+            Override::MoveChapter { photo: 999, chapter: "prep_bride".into() },
+            Override::MoveChapter { photo: 1, chapter: "removed_chapter".into() },
+        ]);
+
+        let found = override_conflicts(&decisions, &all_photos(), &[]);
+
+        assert!(found.contains(&Conflict::MoveChapterPhotoMissing { photo: 999, chapter: "prep_bride".into() }), "{found:?}");
+        assert!(found.contains(&Conflict::MoveChapterChapterMissing { photo: 1, chapter: "removed_chapter".into() }), "{found:?}");
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn people_overrides_with_missing_faces_groups_or_persons_are_reported() {
+        let faces = [
+            FaceMembership { face: 10, photo: 1, cluster: Some(4), soft: false },
+            FaceMembership { face: 11, photo: 2, cluster: None, soft: false },
+        ];
+        let decisions = decisions(&[
+            Override::NamePerson { face: 99, name: "Missing person".into() },
+            Override::MergePersons { face: 10, into_face: 98 },
+            Override::SetRole { face: 11, role: Some(crate::model::Role::Bride) },
+            Override::SetGroup { face: 10, group: "removed_group".into(), member: true },
+        ]);
+
+        let found = override_conflicts(&decisions, &all_photos(), &faces);
+
+        assert!(found.contains(&Conflict::PeopleOverrideFaceMissing { operation: PeopleOverrideKind::Name, face: 99 }), "{found:?}");
+        assert!(found.contains(&Conflict::PeopleOverrideTargetMissing { operation: PeopleOverrideKind::Merge, face: 10, target: 98 }), "{found:?}");
+        assert!(found.contains(&Conflict::PeopleOverridePersonMissing { operation: PeopleOverrideKind::Role, face: 11 }), "{found:?}");
+        assert!(found.contains(&Conflict::PeopleOverrideGroupMissing { face: 10, group: "removed_group".into() }), "{found:?}");
+        assert_eq!(found.len(), 4, "{found:?}");
+    }
+
+    #[test]
+    fn a_locked_spread_reports_a_chapter_move_it_cannot_honour() {
+        let original = build(&input(), &decisions(&[]));
+        let locked = original.spreads[0].clone();
+        let photo = locked.photos[0].photo;
+        let target = decisions(&[]).settings.chapters[1].key.clone();
+        let decisions = decisions(&[
+            Override::LockSpread { spread: locked.clone() },
+            Override::MoveChapter { photo, chapter: target.clone() },
+        ]);
+
+        let album = build(&input(), &decisions);
+        let found = conflicts(&album, &decisions, &all_photos(), &[]);
+
+        assert!(found.contains(&Conflict::MoveChapterOnLockedSpread { photo, spread: locked.uid, chapter: target }), "{found:?}");
     }
 }

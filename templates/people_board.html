@@ -1,3 +1,9 @@
+{% if !override_conflicts.is_empty() %}
+<div class="note note-bad">
+  <b>People Overrides to review</b>
+  <ul>{% for conflict in override_conflicts %}<li>{% if let Some(href) = conflict.href %}<a href="{{ href }}">{{ conflict.message }}</a>{% else %}{{ conflict.message }}{% endif %}</li>{% endfor %}</ul>
+</div>
+{% endif %}
 <div class="facts">
   <div class="fact"><b>{{ persons.len() }}</b><span>people found</span></div>
   <div class="fact"><b>{{ unnamed }}</b><span>without a name</span></div>

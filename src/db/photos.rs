@@ -94,7 +94,7 @@ fn photo_from_row(row: &Row<'_>) -> rusqlite::Result<PhotoRecord> {
         id: row.get(0)?,
         path: row.get(1)?,
         file_name: row.get(2)?,
-        source: row.get::<_, Option<String>>(3)?.map(|s| Source::parse(&s)),
+        source: source_from_row(row, 3)?,
         source_folder: row.get(4)?,
         file_size: row.get(5)?,
         sent_at_utc: row.get(6)?,
@@ -120,6 +120,46 @@ fn photo_from_row(row: &Row<'_>) -> rusqlite::Result<PhotoRecord> {
         chapter_source: row.get(26)?,
         chapter_order: row.get(27)?,
     })
+}
+
+fn source_from_row(row: &Row<'_>, column: usize) -> rusqlite::Result<Option<Source>> {
+    let value: Option<String> = row.get(column)?;
+    value
+        .map(|value| {
+            Source::parse(&value).map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    column,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("unknown photo source {value:?}"),
+                    )),
+                )
+            })
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_from_row;
+    use rusqlite::{Connection, types::Type};
+
+    #[test]
+    fn invalid_persisted_source_is_a_row_decoding_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let error = conn
+            .query_row("SELECT 'archive'", [], |row| source_from_row(row, 0))
+            .unwrap_err();
+
+        match error {
+            rusqlite::Error::FromSqlConversionFailure(column, Type::Text, source_error) => {
+                assert_eq!(column, 0);
+                assert!(source_error.to_string().contains("archive"));
+            }
+            other => panic!("expected source conversion failure, got {other:?}"),
+        }
+    }
 }
 
 /// Filters of the Photos page.
