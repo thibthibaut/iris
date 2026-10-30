@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, State},
     response::{Html, IntoResponse, Response},
 };
-use iris_core::model::{GroupDef, Override, Role};
+use iris_core::model::{GroupDef, GroupKey, Override, PersonId, Role};
 use serde::Deserialize;
 
 use super::{AppState, WebResult, blocking, render, toast};
@@ -40,7 +40,7 @@ impl PersonCard {
 }
 
 /// How many Shots of the album show each Person (any Edition).
-pub fn album_counts(state: &AlbumState, db: &crate::db::Database) -> anyhow::Result<Option<HashMap<i64, usize>>> {
+pub fn album_counts(state: &AlbumState, db: &crate::db::Database) -> anyhow::Result<Option<HashMap<PersonId, usize>>> {
     let proposal: Option<iris_core::model::Proposal> = db.blob("proposal")?;
     Ok(proposal.map(|proposal| {
         let mut counts = HashMap::new();
@@ -55,7 +55,7 @@ pub fn album_counts(state: &AlbumState, db: &crate::db::Database) -> anyhow::Res
     }))
 }
 
-pub fn cards(state: &AlbumState, counts: &Option<HashMap<i64, usize>>) -> Vec<PersonCard> {
+pub fn cards(state: &AlbumState, counts: &Option<HashMap<PersonId, usize>>) -> Vec<PersonCard> {
     let face_photo: HashMap<i64, i64> = state.faces.iter().map(|f| (f.id, f.photo_id)).collect();
     let mut cards: Vec<PersonCard> = state
         .people
@@ -64,11 +64,11 @@ pub fn cards(state: &AlbumState, counts: &Option<HashMap<i64, usize>>) -> Vec<Pe
         .map(|person| {
             let photos: HashSet<i64> = person.faces.iter().filter_map(|f| face_photo.get(f).copied()).collect();
             PersonCard {
-                anchor: person.anchor,
+                anchor: person.anchor.0,
                 name: person.name.clone().unwrap_or_default(),
                 named: person.name.is_some(),
                 role: person.role,
-                groups: person.groups.iter().cloned().collect(),
+                groups: person.groups.iter().map(|group| group.as_str().to_owned()).collect(),
                 quota: person.quota,
                 photos: photos.len(),
                 soft: person.soft_faces.len(),
@@ -102,11 +102,11 @@ struct Board {
 
 impl Board {
     fn group_name<'a>(&'a self, key: &'a str) -> &'a str {
-        self.groups.iter().find(|g| g.key == key).map_or(key, |g| g.name.as_str())
+        self.groups.iter().find(|g| g.key.as_str() == key).map_or(key, |g| g.name.as_str())
     }
 
-    fn members(&self, group: &str) -> Vec<&PersonCard> {
-        self.persons.iter().filter(|p| p.groups.iter().any(|g| g == group)).collect()
+    fn members(&self, group: &GroupKey) -> Vec<&PersonCard> {
+        self.persons.iter().filter(|p| p.groups.iter().any(|g| g.as_str() == group.as_str())).collect()
     }
 }
 
@@ -164,7 +164,7 @@ pub async fn act(
     let (board, label) = blocking(move || {
         let db = state.db()?;
         let snapshot = state.snapshot(&db)?;
-        let person = snapshot.people.by_anchor(anchor);
+        let person = snapshot.people.by_anchor(PersonId::from(anchor));
         let who = person.and_then(|p| p.name.clone()).unwrap_or_else(|| format!("Person {anchor}"));
         let (item, label) = match action.as_str() {
             "name" => {
@@ -186,7 +186,7 @@ pub async fn act(
             }
             "group" => {
                 let member = form.member != "false";
-                let group = form.group.clone();
+                let group = GroupKey::from(form.group.as_str());
                 let group_name = snapshot
                     .decisions
                     .settings
@@ -234,7 +234,7 @@ struct PersonPage {
 fn person_page(state: &AppState, anchor: i64) -> anyhow::Result<Option<PersonPage>> {
     let db = state.db()?;
     let snapshot = state.snapshot(&db)?;
-    let Some(person) = snapshot.people.by_anchor(anchor).cloned() else { return Ok(None) };
+    let Some(person) = snapshot.people.by_anchor(PersonId::from(anchor)).cloned() else { return Ok(None) };
     let counts = album_counts(&snapshot, &db)?;
     let card = cards(&snapshot, &counts).into_iter().find(|c| c.anchor == anchor).expect("person has a card");
     let face_photo: HashMap<i64, i64> = snapshot.faces.iter().map(|f| (f.id, f.photo_id)).collect();
@@ -292,7 +292,7 @@ pub async fn faces(State(state): State<AppState>, Path(action): Path<String>, ax
         state.jobs().notify("overrides");
         // The anchor may have moved (its own face was removed): find the Person again.
         let snapshot = state.snapshot(&db)?;
-        Ok((snapshot.people.person_of_face(form.anchor).map(|p| p.anchor), label))
+        Ok((snapshot.people.person_of_face(form.anchor).map(|p| p.anchor.0), label))
     })
     .await?;
     let location = target.map_or_else(|| "/people".to_string(), |anchor| format!("/people/{anchor}"));

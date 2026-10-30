@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result};
 use iris_core::{
     layout::{MARGIN, TITLE_BAND},
-    model::{Design, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Settings, Spread, SpreadKind},
+    model::{ChapterKey, Design, GroupKey, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Settings, Spread, SpreadKind},
 };
 
 /// Page numbers sit this far above the trim: inside the bottom margin, outside the safe zone.
@@ -21,8 +21,8 @@ const FOLIO_FROM_BOTTOM: f64 = 8.0;
 /// Text shown on Spreads and on the opening, closing and cover pages.
 #[derive(Debug, Clone, Default)]
 pub struct Texts {
-    pub chapter_titles: HashMap<String, (String, String)>,
-    pub group_titles: HashMap<String, (String, String)>,
+    pub chapter_titles: HashMap<ChapterKey, (String, String)>,
+    pub group_titles: HashMap<GroupKey, (String, String)>,
     pub opening: String,
     pub opening_ar: String,
     pub closing: String,

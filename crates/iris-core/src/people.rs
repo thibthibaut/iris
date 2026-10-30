@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::model::{FaceId, Override, PhotoId, Role};
+use crate::model::{FaceId, GroupKey, Override, PersonId, PhotoId, Role};
 
 /// One detected face and the cluster the last cluster run put it in.
 #[derive(Debug, Clone)]
@@ -18,12 +18,12 @@ pub struct FaceMembership {
 pub struct Person {
     /// Smallest face id of the Person: stable across re-clustering as long as that face
     /// stays with them. Overrides made from the GUI use it as their anchor.
-    pub anchor: FaceId,
+    pub anchor: PersonId,
     pub faces: Vec<FaceId>,
     pub soft_faces: Vec<FaceId>,
     pub name: Option<String>,
     pub role: Option<Role>,
-    pub groups: BTreeSet<String>,
+    pub groups: BTreeSet<GroupKey>,
     pub quota: u32,
 }
 
@@ -38,7 +38,7 @@ impl People {
         self.person_of_face.get(&face).map(|&index| &self.persons[index])
     }
 
-    pub fn by_anchor(&self, anchor: FaceId) -> Option<&Person> {
+    pub fn by_anchor(&self, anchor: PersonId) -> Option<&Person> {
         self.persons.iter().find(|person| person.anchor == anchor)
     }
 
@@ -111,7 +111,7 @@ pub fn resolve(faces: &[FaceMembership], ops: &[Override]) -> People {
         .map(|mut faces| {
             faces.sort_unstable();
             Person {
-                anchor: faces[0],
+                anchor: PersonId::from(faces[0]),
                 soft_faces: faces.iter().copied().filter(|face| soft.contains(face)).collect(),
                 faces,
                 ..Person::default()

@@ -8,7 +8,7 @@ use iris_core::{
     album::edition_spreads,
     decisions::Decisions,
     layout::{bleed_crop, face_crop},
-    model::{Crop, Design, EditionDef, PAGE_H, PAGE_W, PhotoId, Rect, Spread},
+    model::{Crop, Design, EditionDef, EditionKey, PAGE_H, PAGE_W, PhotoId, Rect, Spread},
 };
 use libvips::{VipsImage, ops};
 use serde::Serialize;
@@ -81,14 +81,14 @@ impl Stage for Export {
     }
 
     fn staleness_key(&self, db: &crate::db::Database, _decisions: &Decisions) -> Result<String> {
-        album_state_hash(db, self.edition, &AlbumState::load(db)?)
+        album_state_hash(db, &EditionKey::from(self.edition), &AlbumState::load(db)?)
     }
 
     fn run(&self, ctx: &StageCtx, sink: &dyn ProgressSink, cancel: &CancelToken) -> Result<()> {
         let state = AlbumState::load(&ctx.db)?;
         let settings = &state.decisions.settings;
         let bleed = bleed_for(&settings.printer)?;
-        let edition = settings.edition(self.edition).context("unknown Edition")?.clone();
+        let edition = settings.edition(&EditionKey::from(self.edition)).context("unknown Edition")?.clone();
         let album = current(&ctx.db, &state)?.context("build the album first")?;
         let spreads = edition_spreads(&album, &edition);
         let inputs = export_inputs(&ctx.db, &state, &edition, &album, &spreads, bleed)?;
@@ -211,7 +211,7 @@ impl Stage for Export {
     }
 }
 
-pub(crate) fn album_state_hash(db: &crate::db::Database, edition_key: &str, state: &AlbumState) -> Result<String> {
+pub(crate) fn album_state_hash(db: &crate::db::Database, edition_key: &EditionKey, state: &AlbumState) -> Result<String> {
     let Some(album) = current(db, state)? else {
         return Ok(blake3::hash(b"iris-export-no-album-v2").to_hex().to_string());
     };
@@ -251,7 +251,7 @@ fn cover_photo(state: &AlbumState, album: &iris_core::model::Proposal, spreads: 
     }
     let heroes: Vec<PhotoId> = spreads
         .iter()
-        .filter(|s| s.templates.iter().any(|t| t == "hero"))
+        .filter(|s| s.templates.iter().any(|t| t.as_str() == "hero"))
         .flat_map(|s| s.photos.iter().map(|p| p.photo))
         .collect();
     heroes.first().copied().or_else(|| album.spreads.iter().flat_map(|s| s.photos.iter()).map(|p| p.photo).next())
@@ -351,8 +351,8 @@ fn export_inputs(
         design: settings.design.clone(),
         spreads: spreads.iter().map(|spread| (*spread).clone()).collect(),
         texts: ExportTexts {
-            chapter_titles: texts.chapter_titles.into_iter().collect(),
-            group_titles: texts.group_titles.into_iter().collect(),
+            chapter_titles: texts.chapter_titles.into_iter().map(|(key, value)| (key.to_string(), value)).collect(),
+            group_titles: texts.group_titles.into_iter().map(|(key, value)| (key.to_string(), value)).collect(),
             opening: texts.opening,
             opening_ar: texts.opening_ar,
             closing: texts.closing,
@@ -422,7 +422,7 @@ mod tests {
 
     fn fingerprint() -> ExportFingerprint {
         let settings = Settings::default();
-        let edition = settings.edition("ours").unwrap().clone();
+        let edition = settings.edition(&EditionKey::from("ours")).unwrap().clone();
         ExportFingerprint {
             schema: 1,
             edition,

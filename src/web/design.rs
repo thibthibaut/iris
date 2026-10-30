@@ -153,7 +153,7 @@ pub async fn export_page(State(state): State<AppState>) -> WebResult<Html<String
                     .unwrap_or_default();
                 let mut versions: Vec<ExportVersion> = exports
                     .iter()
-                    .filter(|export| export.edition == edition.key)
+                    .filter(|export| export.edition.as_str() == edition.key.as_str())
                     .map(|export| {
                         let exported: Vec<String> = export.manifest["spreads"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
                         let changed = spreads.iter().filter(|uid| !exported.contains(uid)).count() + exported.iter().filter(|uid| !spreads.contains(uid)).count();

@@ -11,7 +11,7 @@ use iris_core::{
     album::edition_spreads,
     edit::{Edit, apply, pages},
     layout::page_options,
-    model::{Crop, EditionDef, Override, PAGE_W, PhotoId, Spread, SpreadKind},
+    model::{ChapterKey, Crop, EditionDef, EditionKey, Override, PAGE_W, PhotoId, Spread, SpreadKind, TemplateKey},
 };
 use serde::Deserialize;
 
@@ -67,7 +67,7 @@ struct AlbumPage {
 }
 
 pub fn chosen_edition(state: &AlbumState, key: &str) -> EditionDef {
-    state.decisions.settings.edition(key).or_else(|| state.decisions.settings.editions.first()).cloned().unwrap_or(EditionDef {
+    state.decisions.settings.edition(&EditionKey::from(key)).or_else(|| state.decisions.settings.editions.first()).cloned().unwrap_or(EditionDef {
         key: "ours".into(),
         name: "Nous".into(),
         group: None,
@@ -95,7 +95,7 @@ fn album_page(state: &AppState, edition_key: &str) -> anyhow::Result<AlbumPage> 
         for chapter in &settings.chapters {
             let in_chapter: Vec<&&Spread> = spreads.iter().filter(|s| s.chapter == chapter.key).collect();
             sections.push(ChapterSection {
-                key: chapter.key.clone(),
+                key: chapter.key.as_str().to_owned(),
                 title: chapter.title_fr.clone(),
                 core_count: in_chapter.iter().filter(|s| s.kind == SpreadKind::Core).count(),
                 spreads: in_chapter
@@ -244,12 +244,12 @@ fn editor(
     let shots = layout_shots(snapshot);
     let (left, right) = pages(spread);
     let page_shots = |ids: &[PhotoId]| -> Vec<_> { ids.iter().filter_map(|id| shots.get(id).cloned()).collect() };
-    let current_of = |page: usize| spread.templates[page].clone();
+    let current_of = |page: usize| spread.templates[page].as_str().to_owned();
     let mut options = [
         if left.is_empty() { Vec::new() } else { page_options(&page_shots(&left), false, spread.title) },
         if right.is_empty() { Vec::new() } else { page_options(&page_shots(&right), true, false) },
     ]
-    .map(|list| list.into_iter().take(8).map(|(t, _)| (t.clone(), describe(&t), false)).collect::<Vec<_>>());
+    .map(|list| list.into_iter().take(8).map(|(t, _)| (t.as_str().to_owned(), describe(t.as_str()), false)).collect::<Vec<_>>());
     for (page, list) in options.iter_mut().enumerate() {
         for option in list.iter_mut() {
             option.2 = option.0 == current_of(page);
@@ -259,10 +259,10 @@ fn editor(
     let preview_path = preview(state.config(), snapshot, spread, numbers.get(&uid).copied().unwrap_or_default())?;
     Ok(Some(Editor {
         uid,
-        edition: edition.key.clone(),
+        edition: edition.key.as_str().to_owned(),
         chapter: settings.chapters.iter().find(|c| c.key == spread.chapter).map(|c| c.title_fr.clone()).unwrap_or_default(),
         kind: spread.kind,
-        group: spread.group.clone().unwrap_or_default(),
+        group: spread.group.as_ref().map(|group| group.as_str().to_owned()).unwrap_or_default(),
         locked: spread.locked,
         crop_pending,
         title: spread.title,
@@ -287,7 +287,7 @@ fn editor(
                 hero: snapshot.decisions.heroes.contains(&placed.photo),
             })
             .collect(),
-        templates: spread.templates.clone().map(|t| describe(&t)),
+        templates: spread.templates.clone().map(|t| describe(t.as_str())),
         options,
         warnings: warnings(snapshot, spread),
         prev: index.checked_sub(1).map(|i| spreads[i].uid),
@@ -395,7 +395,7 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
             }
             "template" => {
                 let page = form.page.unwrap_or(0);
-                lock(edited(Edit::SetTemplate { page, template: form.template.clone() })?, format!("Changed the {} page to {}", if page == 0 { "left" } else { "right" }, describe(&form.template)))?
+                lock(edited(Edit::SetTemplate { page, template: TemplateKey::from(form.template.clone()) })?, format!("Changed the {} page to {}", if page == 0 { "left" } else { "right" }, describe(&form.template)))?
             }
             "relayout" => lock(edited(Edit::Relayout)?, "Re-laid out a Spread".into())?,
             "title" => lock(edited(Edit::SetTitle { title: !spread.title })?, if spread.title { "Removed a title".into() } else { "Added the Chapter title".into() })?,
@@ -423,7 +423,7 @@ pub async fn edit(State(state): State<AppState>, Path(uid): Path<u64>, axum::For
             }
             "chapter_spreads" => {
                 let label = format!("{} now has {} Spreads (rebuild to apply)", form.chapter, form.count.unwrap_or(1));
-                state.decide(&db, Override::SetChapterSpreads { chapter: form.chapter.clone(), count: form.count.unwrap_or(1) }, &label)?;
+                state.decide(&db, Override::SetChapterSpreads { chapter: ChapterKey::from(form.chapter.clone()), count: form.count.unwrap_or(1) }, &label)?;
                 label
             }
             _ => anyhow::bail!("unknown action {}", form.op),

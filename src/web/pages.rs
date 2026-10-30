@@ -6,7 +6,7 @@ use axum::{
     extract::State,
     response::{Html, IntoResponse, Response},
 };
-use iris_core::model::{Override, Settings};
+use iris_core::model::{EditionKey, GroupKey, Override, Settings};
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,7 +54,7 @@ pub async fn settings(State(state): State<AppState>) -> WebResult<Html<String>> 
             .chapters
             .iter()
             .map(|chapter| ChapterSettingRow {
-                key: chapter.key.clone(),
+                key: chapter.key.to_string(),
                 title_fr: chapter.title_fr.clone(),
                 title_ar: chapter.title_ar.clone(),
                 prompts: chapter.prompts.join("\n"),
@@ -65,12 +65,12 @@ pub async fn settings(State(state): State<AppState>) -> WebResult<Html<String>> 
             .groups
             .iter()
             .map(|group| GroupSettingRow {
-                key: group.key.clone(),
+                key: group.key.to_string(),
                 name: group.name.clone(),
                 title_ar: group.title_ar.clone(),
                 edition: group
                     .edition
-                    .as_deref()
+                    .as_ref()
                     .and_then(|key| s.edition(key))
                     .map(|edition| edition.name.clone())
                     .unwrap_or_default(),
@@ -80,9 +80,9 @@ pub async fn settings(State(state): State<AppState>) -> WebResult<Html<String>> 
             .editions
             .iter()
             .map(|edition| EditionSettingRow {
-                key: edition.key.clone(),
+                key: edition.key.to_string(),
                 name: edition.name.clone(),
-                group: edition.group.clone().unwrap_or_default(),
+                group: edition.group.as_ref().map(ToString::to_string).unwrap_or_default(),
             })
             .collect();
         Ok(SettingsPage {
@@ -264,7 +264,7 @@ fn apply_definition_edit(
             let chapter = settings
                 .chapters
                 .iter_mut()
-                .find(|chapter| chapter.key == form.key)
+                .find(|chapter| chapter.key.as_str() == form.key)
                 .ok_or_else(|| anyhow::anyhow!("Chapter not found"))?;
             chapter.title_fr = title_fr;
             chapter.title_ar = title_ar;
@@ -280,11 +280,11 @@ fn apply_definition_edit(
                 &settings
                     .groups
                     .iter()
-                    .map(|group| group.key.clone())
+                    .map(|group| group.key.to_string())
                     .collect::<Vec<_>>(),
             );
             settings.groups.push(iris_core::model::GroupDef {
-                key: key.clone(),
+                key: GroupKey::from(key.clone()),
                 name,
                 title_ar,
                 edition: None,
@@ -297,7 +297,7 @@ fn apply_definition_edit(
             let group = settings
                 .groups
                 .iter_mut()
-                .find(|group| group.key == form.key)
+                .find(|group| group.key.as_str() == form.key)
                 .ok_or_else(|| anyhow::anyhow!("Group not found"))?;
             group.name = name;
             group.title_ar = title_ar;
@@ -305,7 +305,7 @@ fn apply_definition_edit(
         }
         ("group", "remove") => {
             let before = settings.groups.len();
-            settings.groups.retain(|group| group.key != form.key);
+            settings.groups.retain(|group| group.key.as_str() != form.key);
             anyhow::ensure!(settings.groups.len() < before, "Group not found");
             format!("Removed Group {}", form.key)
         }
@@ -316,12 +316,12 @@ fn apply_definition_edit(
                 &settings
                     .editions
                     .iter()
-                    .map(|edition| edition.key.clone())
+                    .map(|edition| edition.key.to_string())
                     .collect::<Vec<_>>(),
             );
             let group = selected_group(settings, &form.group)?;
             settings.editions.push(iris_core::model::EditionDef {
-                key: key.clone(),
+                key: EditionKey::from(key.clone()),
                 name,
                 group: None,
             });
@@ -335,7 +335,7 @@ fn apply_definition_edit(
                 settings
                     .editions
                     .iter()
-                    .any(|edition| edition.key == form.key),
+                    .any(|edition| edition.key.as_str() == form.key),
                 "Edition not found"
             );
             anyhow::ensure!(
@@ -345,7 +345,7 @@ fn apply_definition_edit(
             let edition = settings
                 .editions
                 .iter_mut()
-                .find(|edition| edition.key == form.key)
+                .find(|edition| edition.key.as_str() == form.key)
                 .ok_or_else(|| anyhow::anyhow!("Edition not found"))?;
             edition.name = name;
             associate_group(settings, &form.key, group)?;
@@ -354,7 +354,7 @@ fn apply_definition_edit(
         ("edition", "remove") => {
             anyhow::ensure!(form.key != "ours", "the everyone Edition is required");
             let before = settings.editions.len();
-            settings.editions.retain(|edition| edition.key != form.key);
+            settings.editions.retain(|edition| edition.key.as_str() != form.key);
             anyhow::ensure!(settings.editions.len() < before, "Edition not found");
             format!("Removed Edition {}", form.key)
         }
@@ -400,37 +400,37 @@ fn fresh_key(prefix: &str, used: &[String]) -> String {
     key
 }
 
-fn selected_group(settings: &Settings, value: &str) -> Result<Option<String>> {
+fn selected_group(settings: &Settings, value: &str) -> Result<Option<GroupKey>> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
     }
     anyhow::ensure!(
-        settings.groups.iter().any(|group| group.key == value),
+        settings.groups.iter().any(|group| group.key.as_str() == value),
         "choose an existing Group"
     );
-    Ok(Some(value.to_string()))
+    Ok(Some(GroupKey::from(value)))
 }
 
 fn associate_group(
     settings: &mut Settings,
     edition_key: &str,
-    group: Option<String>,
+    group: Option<GroupKey>,
 ) -> Result<()> {
     anyhow::ensure!(
         edition_key != "ours" || group.is_none(),
         "the everyone Edition cannot be tied to one Group"
     );
-    if let Some(group) = group.as_deref() {
+    if let Some(group) = group.as_ref() {
         anyhow::ensure!(
             settings
                 .groups
                 .iter()
-                .any(|candidate| candidate.key == group),
+                .any(|candidate| &candidate.key == group),
             "choose an existing Group"
         );
         for edition in &mut settings.editions {
-            if edition.key != edition_key && edition.group.as_deref() == Some(group) {
+            if edition.key.as_str() != edition_key && edition.group.as_ref() == Some(group) {
                 edition.group = None;
             }
         }
@@ -438,7 +438,7 @@ fn associate_group(
     let edition = settings
         .editions
         .iter_mut()
-        .find(|edition| edition.key == edition_key)
+        .find(|edition| edition.key.as_str() == edition_key)
         .ok_or_else(|| anyhow::anyhow!("Edition not found"))?;
     edition.group = group;
     Ok(())
@@ -558,11 +558,11 @@ mod tests {
             !settings
                 .groups
                 .iter()
-                .any(|group| group.key == "bride_family")
+                .any(|group| group.key.as_str() == "bride_family")
         );
-        assert!(settings.edition("bride_parents").unwrap().group.is_none());
+        assert!(settings.edition(&EditionKey::from("bride_parents")).unwrap().group.is_none());
         assert_eq!(
-            settings.edition("dad").unwrap().group.as_deref(),
+            settings.edition(&EditionKey::from("dad")).unwrap().group.as_ref().map(GroupKey::as_str),
             Some("groom_dad_family")
         );
     }
@@ -585,11 +585,11 @@ mod tests {
 
         assert!(edition_key.starts_with("edition_"));
         assert_eq!(
-            settings.edition(&edition_key).unwrap().group.as_deref(),
+            settings.edition(&edition_key).unwrap().group.as_ref().map(GroupKey::as_str),
             Some(group_key.as_str())
         );
         assert_eq!(
-            settings.groups.last().unwrap().edition.as_deref(),
+            settings.groups.last().unwrap().edition.as_ref().map(EditionKey::as_str),
             Some(edition_key.as_str())
         );
     }
@@ -605,19 +605,20 @@ mod tests {
         let (key, _) = apply_definition_edit(&mut settings, &change).unwrap();
 
         assert_eq!(key, "editions");
-        assert!(settings.edition("dad").unwrap().group.is_none());
+        assert!(settings.edition(&EditionKey::from("dad")).unwrap().group.is_none());
         assert_eq!(
-            settings.edition("mom").unwrap().group.as_deref(),
+            settings.edition(&EditionKey::from("mom")).unwrap().group.as_ref().map(GroupKey::as_str),
             Some("groom_dad_family")
         );
         assert_eq!(
             settings
                 .groups
                 .iter()
-                .find(|group| group.key == "groom_dad_family")
+                .find(|group| group.key.as_str() == "groom_dad_family")
                 .unwrap()
                 .edition
-                .as_deref(),
+                .as_ref()
+                .map(EditionKey::as_str),
             Some("mom")
         );
     }

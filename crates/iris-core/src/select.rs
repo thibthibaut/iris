@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::model::PhotoId;
+use crate::model::{GroupKey, PersonId, PhotoId};
 
 /// One Shot that could go in the album (its representative Photo).
 #[derive(Debug, Clone, Default)]
@@ -14,7 +14,7 @@ pub struct Candidate {
     pub order: f64,
     pub quality: f64,
     /// Persons (anchors) clearly visible.
-    pub persons: Vec<i64>,
+    pub persons: Vec<PersonId>,
     /// Height of the biggest Couple face, as a share of the Photo's height (0 if none).
     pub couple_face: f64,
     pub photographer: bool,
@@ -29,8 +29,8 @@ pub struct Candidate {
 
 #[derive(Debug, Clone)]
 pub struct GroupPick {
-    pub key: String,
-    pub members: HashSet<i64>,
+    pub key: GroupKey,
+    pub members: HashSet<PersonId>,
     pub size: usize,
 }
 
@@ -39,8 +39,8 @@ pub struct SelectInput {
     pub candidates: Vec<Candidate>,
     /// How many Shots each Chapter's core Spreads should hold.
     pub budgets: Vec<usize>,
-    pub quotas: HashMap<i64, u32>,
-    pub couple: HashSet<i64>,
+    pub quotas: HashMap<PersonId, u32>,
+    pub couple: HashSet<PersonId>,
     pub couple_share: f64,
     pub groups: Vec<GroupPick>,
     /// Shots already placed in Locked Spreads.
@@ -51,12 +51,12 @@ pub struct SelectInput {
 pub struct Selection {
     /// Selected Shots per Chapter, in Chapter order.
     pub chapters: Vec<Vec<PhotoId>>,
-    pub groups: Vec<(String, Vec<PhotoId>)>,
+    pub groups: Vec<(GroupKey, Vec<PhotoId>)>,
     /// For the candidate tray: per selected Shot, the best unselected alternatives.
     pub alternatives: BTreeMap<PhotoId, Vec<PhotoId>>,
     pub couple_share: f64,
     /// (person, quota, reached)
-    pub unmet_quotas: Vec<(i64, u32, u32)>,
+    pub unmet_quotas: Vec<(PersonId, u32, u32)>,
 }
 
 const ALTERNATIVES: usize = 12;
@@ -71,8 +71,8 @@ pub fn select(input: &SelectInput) -> Selection {
     let candidates = &input.candidates;
     let chapters = input.budgets.len();
     let mut taken: HashSet<usize> = HashSet::new();
-    let mut counts: HashMap<i64, u32> = HashMap::new();
-    let count_in = |counts: &mut HashMap<i64, u32>, candidate: &Candidate| {
+    let mut counts: HashMap<PersonId, u32> = HashMap::new();
+    let count_in = |counts: &mut HashMap<PersonId, u32>, candidate: &Candidate| {
         for person in &candidate.persons {
             *counts.entry(*person).or_insert(0) += 1;
         }
@@ -90,12 +90,12 @@ pub fn select(input: &SelectInput) -> Selection {
         let pool: Vec<usize> = (0..candidates.len())
             .filter(|i| !taken.contains(i) && candidates[*i].eligible)
             .filter(|&i| {
-                let others: Vec<&i64> = candidates[i].persons.iter().filter(|p| !input.couple.contains(p)).collect();
+                let others: Vec<&PersonId> = candidates[i].persons.iter().filter(|p| !input.couple.contains(p)).collect();
                 let members = others.iter().filter(|p| group.members.contains(p)).count();
                 members > 0 && members * 2 >= others.len()
             })
             .collect();
-        let mut covered: HashSet<i64> = HashSet::new();
+        let mut covered: HashSet<PersonId> = HashSet::new();
         let mut picked: Vec<usize> = Vec::new();
         while picked.len() < group.size {
             let best = pool
@@ -104,7 +104,7 @@ pub fn select(input: &SelectInput) -> Selection {
                 .filter(|i| !picked.contains(i))
                 .map(|i| {
                     let c = &candidates[i];
-                    let members: Vec<i64> = c.persons.iter().copied().filter(|p| group.members.contains(p)).collect();
+                    let members: Vec<PersonId> = c.persons.iter().copied().filter(|p| group.members.contains(p)).collect();
                     let new = members.iter().filter(|p| !covered.contains(p)).count() as f64;
                     let similar = picked.iter().map(|&j| dot(&c.embedding, &candidates[j].embedding)).fold(0.0, f64::max);
                     let gain = 0.5 * c.quality + new + 0.3 * f64::from(u8::from(c.group_portrait)) + 0.2 * members.len() as f64
@@ -133,7 +133,7 @@ pub fn select(input: &SelectInput) -> Selection {
     let pick = |i: usize,
                 selected: &mut Vec<Vec<usize>>,
                 taken: &mut HashSet<usize>,
-                counts: &mut HashMap<i64, u32>,
+                counts: &mut HashMap<PersonId, u32>,
                 max_similar: &mut Vec<f64>,
                 couple_shots: &mut usize| {
         let chosen = &candidates[i];
@@ -212,7 +212,7 @@ pub fn select(input: &SelectInput) -> Selection {
     }
 
     let total: usize = selected.iter().map(Vec::len).sum();
-    let mut unmet_quotas: Vec<(i64, u32, u32)> = input
+    let mut unmet_quotas: Vec<(PersonId, u32, u32)> = input
         .quotas
         .iter()
         .filter(|(_, quota)| **quota > 0)
@@ -257,7 +257,7 @@ mod tests {
         let mut pinned = shot(4, 0.2, 0.8);
         pinned.pinned = true;
         let mut aunt = shot(6, 0.3, 1.2);
-        aunt.persons = vec![7];
+        aunt.persons = vec![PersonId::from(7)];
         let input = SelectInput {
             candidates: vec![
                 shot(1, 0.9, 0.0),
@@ -268,7 +268,7 @@ mod tests {
                 aunt,
             ],
             budgets: vec![3],
-            quotas: HashMap::from([(7, 1)]),
+            quotas: HashMap::from([(PersonId::from(7), 1)]),
             ..SelectInput::default()
         };
 
@@ -285,22 +285,22 @@ mod tests {
     #[test]
     fn group_spreads_take_their_members_photos_and_core_does_not_repeat_them() {
         let mut portrait = shot(1, 0.6, 0.0);
-        portrait.persons = vec![10, 11];
+        portrait.persons = vec![PersonId::from(10), PersonId::from(11)];
         portrait.group_portrait = true;
         let mut uncle = shot(2, 0.5, 1.0);
-        uncle.persons = vec![10];
+        uncle.persons = vec![PersonId::from(10)];
         let mut friend = shot(3, 0.9, 2.0);
-        friend.persons = vec![20];
+        friend.persons = vec![PersonId::from(20)];
         let input = SelectInput {
             candidates: vec![portrait, uncle, friend, shot(4, 0.7, 3.0)],
             budgets: vec![4],
-            groups: vec![GroupPick { key: "fam".into(), members: HashSet::from([10, 11]), size: 2 }],
+            groups: vec![GroupPick { key: "fam".into(), members: HashSet::from([PersonId::from(10), PersonId::from(11)]), size: 2 }],
             ..SelectInput::default()
         };
 
         let selection = select(&input);
 
-        assert_eq!(selection.groups, vec![("fam".to_string(), vec![1, 2])]);
+        assert_eq!(selection.groups, vec![(GroupKey::from("fam"), vec![1, 2])]);
         assert_eq!(selection.chapters[0], vec![3, 4]);
     }
 }

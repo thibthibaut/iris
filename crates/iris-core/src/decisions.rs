@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::model::{Override, PhotoId, Settings, Spread};
+use crate::model::{ChapterKey, Override, PhotoId, Settings, Spread};
 
 #[derive(Debug, Clone, Default)]
 pub struct Decisions {
@@ -10,10 +10,10 @@ pub struct Decisions {
     pub pins: HashSet<PhotoId>,
     pub bans: HashSet<PhotoId>,
     pub heroes: HashSet<PhotoId>,
-    pub chapter_moves: HashMap<PhotoId, String>,
+    pub chapter_moves: HashMap<PhotoId, ChapterKey>,
     pub shot_splits: HashSet<PhotoId>,
     pub locked: BTreeMap<u64, Spread>,
-    pub chapter_spreads: HashMap<String, u32>,
+    pub chapter_spreads: HashMap<ChapterKey, u32>,
     pub texts: BTreeMap<String, String>,
     /// People Overrides, in order; resolved against face clusters by `people::resolve`.
     pub people: Vec<Override>,
@@ -198,10 +198,10 @@ fn setting_text_value(settings: &Settings, text_key: &str) -> Option<String> {
     let mut parts = text_key.split('.');
     let (section, key, language) = (parts.next()?, parts.next()?, parts.next()?);
     match (section, language) {
-        ("chapter", "fr") => settings.chapters.iter().find(|chapter| chapter.key == key).map(|chapter| chapter.title_fr.clone()),
-        ("chapter", "ar") => settings.chapters.iter().find(|chapter| chapter.key == key).map(|chapter| chapter.title_ar.clone()),
-        ("group", "fr") => settings.groups.iter().find(|group| group.key == key).map(|group| group.name.clone()),
-        ("group", "ar") => settings.groups.iter().find(|group| group.key == key).map(|group| group.title_ar.clone()),
+        ("chapter", "fr") => settings.chapters.iter().find(|chapter| chapter.key.as_str() == key).map(|chapter| chapter.title_fr.clone()),
+        ("chapter", "ar") => settings.chapters.iter().find(|chapter| chapter.key.as_str() == key).map(|chapter| chapter.title_ar.clone()),
+        ("group", "fr") => settings.groups.iter().find(|group| group.key.as_str() == key).map(|group| group.name.clone()),
+        ("group", "ar") => settings.groups.iter().find(|group| group.key.as_str() == key).map(|group| group.title_ar.clone()),
         _ => None,
     }
 }
@@ -301,14 +301,17 @@ mod tests {
     #[test]
     fn removing_a_group_clears_edition_links_and_keeps_other_settings() {
         let mut settings = Settings::default();
-        settings.groups.retain(|group| group.key != "bride_family");
+        settings.groups.retain(|group| group.key.as_str() != "bride_family");
         let decisions = Decisions::replay(&[Override::SetSetting {
             key: "groups".into(),
             value: serde_json::to_value(&settings.groups).unwrap(),
         }]);
 
-        assert!(decisions.settings.edition("bride_parents").unwrap().group.is_none());
-        assert_eq!(decisions.settings.groups.iter().find(|group| group.key == "groom_dad_family").unwrap().edition.as_deref(), Some("dad"));
+        assert!(decisions.settings.edition(&crate::model::EditionKey::from("bride_parents")).unwrap().group.is_none());
+        assert_eq!(
+            decisions.settings.groups.iter().find(|group| group.key.as_str() == "groom_dad_family").unwrap().edition.as_ref().map(crate::model::EditionKey::as_str),
+            Some("dad")
+        );
         assert_eq!(decisions.settings.wedding_date, Settings::default().wedding_date);
         assert_eq!(decisions.settings.chapters.len(), Settings::default().chapters.len());
     }

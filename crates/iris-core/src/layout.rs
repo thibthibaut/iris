@@ -5,7 +5,7 @@
 //! columns keep each Photo's own shape, so nothing is cropped; heroes are cropped around
 //! the faces.
 
-use crate::model::{Crop, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Rect};
+use crate::model::{Crop, PAGE_H, PAGE_W, PhotoId, PlacedPhoto, Rect, TemplateKey};
 
 /// Top and side margins: twice the printer's 5 mm safe zone.
 pub const MARGIN: f64 = 10.0;
@@ -75,7 +75,8 @@ pub fn face_crop(photo_aspect: f64, slot_aspect: f64, faces: &[[f64; 4]]) -> (Cr
     }
 }
 
-fn parse_template(template: &str) -> Option<(&str, Vec<usize>)> {
+fn parse_template(template: &TemplateKey) -> Option<(&str, Vec<usize>)> {
+    let template = template.as_str();
     if template == "hero" {
         return Some(("hero", vec![1]));
     }
@@ -109,7 +110,7 @@ pub fn bleed_crop(crop: Crop, slot: Rect, bled: Rect) -> Crop {
     out
 }
 
-pub fn layout_page(shots: &[LayoutShot], template: &str, right_page: bool, title: bool) -> Option<Vec<PlacedPhoto>> {
+pub fn layout_page(shots: &[LayoutShot], template: &TemplateKey, right_page: bool, title: bool) -> Option<Vec<PlacedPhoto>> {
     let (kind, sizes) = parse_template(template)?;
     if sizes.iter().sum::<usize>() != shots.len() || sizes.contains(&0) {
         return None;
@@ -209,8 +210,8 @@ fn fit_crop_resolution(rect: Rect, max_print_mm: f64, photo_aspect: f64, crop: C
 }
 
 /// How good a laid-out page is: lower is better.
-fn page_cost(shots: &[LayoutShot], placed: &[PlacedPhoto], template: &str, right_page: bool, title: bool) -> f64 {
-    if template == "hero" {
+fn page_cost(shots: &[LayoutShot], placed: &[PlacedPhoto], template: &TemplateKey, right_page: bool, title: bool) -> f64 {
+    if template.as_str() == "hero" {
         // Heroes are chosen, not discovered: only landscape Photos fill a page well.
         let shot = &shots[0];
         let loss = 1.0 - (shot.aspect.min(PAGE_W / PAGE_H) / shot.aspect.max(PAGE_W / PAGE_H));
@@ -259,9 +260,9 @@ fn compositions(n: usize, max_lines: usize, max_per_line: usize) -> Vec<Vec<usiz
 }
 
 /// Every Template that fits these Shots, best first, with its cost.
-pub fn page_options(shots: &[LayoutShot], right_page: bool, title: bool) -> Vec<(String, f64)> {
+pub fn page_options(shots: &[LayoutShot], right_page: bool, title: bool) -> Vec<(TemplateKey, f64)> {
     let mut options = Vec::new();
-    let mut try_template = |template: String| {
+    let mut try_template = |template: TemplateKey| {
         if let Some(placed) = layout_page(shots, &template, right_page, title) {
             let cost = page_cost(shots, &placed, &template, right_page, title);
             options.push((template, cost));
@@ -271,11 +272,11 @@ pub fn page_options(shots: &[LayoutShot], right_page: bool, title: bool) -> Vec<
         try_template("hero".into());
     }
     for sizes in compositions(shots.len(), 3, 4) {
-        try_template(format!("rows:{}", join(&sizes)));
+        try_template(format!("rows:{}", join(&sizes)).into());
     }
     for sizes in compositions(shots.len(), 4, 3) {
         if sizes.len() > 1 || shots.len() > 1 {
-            try_template(format!("cols:{}", join(&sizes)));
+            try_template(format!("cols:{}", join(&sizes)).into());
         }
     }
     options.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -290,7 +291,7 @@ fn join(sizes: &[usize]) -> String {
 /// A laid-out Spread before it gets an identity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpreadLayout {
-    pub templates: [String; 2],
+    pub templates: [TemplateKey; 2],
     pub photos: Vec<PlacedPhoto>,
     pub cost: f64,
 }
@@ -316,19 +317,19 @@ pub fn layout_spread(shots: &[LayoutShot], title: bool) -> Option<SpreadLayout> 
 }
 
 /// How many Shots a Template holds.
-pub fn template_size(template: &str) -> usize {
+pub fn template_size(template: &TemplateKey) -> usize {
     parse_template(template).map_or(0, |(_, sizes)| sizes.iter().sum())
 }
 
-fn templates_split(templates: &[String; 2], total: usize) -> usize {
+fn templates_split(templates: &[TemplateKey; 2], total: usize) -> usize {
     template_size(&templates[0]).min(total)
 }
 
 #[derive(Default)]
-struct PageMemo(std::collections::HashMap<(Vec<PhotoId>, bool, bool), Option<(String, f64)>>);
+struct PageMemo(std::collections::HashMap<(Vec<PhotoId>, bool, bool), Option<(TemplateKey, f64)>>);
 
 impl PageMemo {
-    fn best(&mut self, shots: &[LayoutShot], right_page: bool, title: bool) -> Option<(String, f64)> {
+    fn best(&mut self, shots: &[LayoutShot], right_page: bool, title: bool) -> Option<(TemplateKey, f64)> {
         let key = (shots.iter().map(|s| s.photo).collect(), right_page, title);
         self.0
             .entry(key)
@@ -337,7 +338,7 @@ impl PageMemo {
     }
 }
 
-fn best_spread(shots: &[LayoutShot], title: bool, memo: &mut PageMemo) -> Option<([String; 2], f64)> {
+fn best_spread(shots: &[LayoutShot], title: bool, memo: &mut PageMemo) -> Option<([TemplateKey; 2], f64)> {
     let n = shots.len();
     if n == 0 {
         return None;
@@ -345,10 +346,10 @@ fn best_spread(shots: &[LayoutShot], title: bool, memo: &mut PageMemo) -> Option
     if n == 1 {
         // One Shot: alone on the right page, the left page stays for the title or blank.
         let (template, cost) = memo.best(shots, true, false)?;
-        return Some(([String::new(), template], cost + 0.6));
+        return Some(([TemplateKey::default(), template], cost + 0.6));
     }
     let heroes = shots.iter().filter(|s| s.hero).count();
-    let mut best: Option<([String; 2], f64)> = None;
+    let mut best: Option<([TemplateKey; 2], f64)> = None;
     for left in 1..n {
         let right = n - left;
         if left > MAX_PER_PAGE || right > MAX_PER_PAGE {

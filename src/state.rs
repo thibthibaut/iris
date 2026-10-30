@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use iris_core::{
     decisions::{Decisions, Eligibility},
-    model::{PhotoId, Role, Source},
+    model::{ChapterKey, PersonId, PhotoId, Role, Source},
     people::{FaceMembership, People},
     quality::{Evaluation, Measurements, evaluate},
 };
@@ -76,8 +76,8 @@ impl AlbumState {
     }
 
     /// Persons (by anchor face) visible in a Photo.
-    pub fn persons_in(&self, photo: PhotoId) -> Vec<i64> {
-        let mut anchors: Vec<i64> = self
+    pub fn persons_in(&self, photo: PhotoId) -> Vec<PersonId> {
+        let mut anchors: Vec<PersonId> = self
             .counted_faces(photo)
             .filter_map(|face| self.people.person_of_face(face.id).map(|p| p.anchor))
             .collect();
@@ -87,22 +87,22 @@ impl AlbumState {
     }
 
     /// Whether a counted Face belongs to the Couple, using the precomputed Couple anchors.
-    pub fn is_couple_face(&self, face: &FaceRow, couple_anchors: &HashSet<i64>) -> bool {
+    pub fn is_couple_face(&self, face: &FaceRow, couple_anchors: &HashSet<PersonId>) -> bool {
         self.people.person_of_face(face.id).is_some_and(|person| couple_anchors.contains(&person.anchor))
     }
 
-    pub fn couple_anchors(&self) -> HashSet<i64> {
+    pub fn couple_anchors(&self) -> HashSet<PersonId> {
         Self::couple_anchors_for(&self.people)
     }
 
-    fn couple_anchors_for(people: &People) -> HashSet<i64> {
+    fn couple_anchors_for(people: &People) -> HashSet<PersonId> {
         [Role::Bride, Role::Groom]
             .into_iter()
             .filter_map(|role| people.with_role(role).map(|p| p.anchor))
             .collect()
     }
 
-    fn measurements(&self, photo: &PhotoRecord, couple_anchors: &HashSet<i64>) -> Measurements {
+    fn measurements(&self, photo: &PhotoRecord, couple_anchors: &HashSet<PersonId>) -> Measurements {
         let faces: Vec<&FaceRow> = self.counted_faces(photo.id).collect();
         let biggest = faces.iter().map(|f| f.height_frac()).fold(0.0, f64::max);
         let important = faces
@@ -125,8 +125,8 @@ impl AlbumState {
     }
 
     /// The Chapter after the user's moves.
-    pub fn chapter_of(&self, photo: &PhotoRecord) -> Option<String> {
-        self.decisions.chapter_moves.get(&photo.id).cloned().or_else(|| photo.chapter.clone())
+    pub fn chapter_of(&self, photo: &PhotoRecord) -> Option<ChapterKey> {
+        self.decisions.chapter_moves.get(&photo.id).cloned().or_else(|| photo.chapter.clone().map(ChapterKey::from))
     }
 
     pub fn eligibility(&self, photo: PhotoId) -> Eligibility {

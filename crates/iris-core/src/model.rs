@@ -1,11 +1,87 @@
 //! Domain types of the album (see CONTEXT.md). Pure data, no I/O.
 
-use std::collections::BTreeMap;
+use std::{borrow::Borrow, collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
 pub type PhotoId = i64;
 pub type FaceId = i64;
+
+macro_rules! string_key {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Self {
+                Self(value.into())
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(value: String) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                Self(value.to_string())
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+string_key!(ChapterKey);
+string_key!(GroupKey);
+string_key!(EditionKey);
+string_key!(TemplateKey);
+
+/// Stable identity of a Person, derived from its anchor Face id.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PersonId(pub i64);
+
+impl From<i64> for PersonId {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PersonId> for i64 {
+    fn from(value: PersonId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for PersonId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +128,7 @@ pub enum Role {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChapterDef {
-    pub key: String,
+    pub key: ChapterKey,
     pub title_fr: String,
     #[serde(default)]
     pub title_ar: String,
@@ -74,21 +150,21 @@ fn one() -> f64 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupDef {
-    pub key: String,
+    pub key: GroupKey,
     pub name: String,
     /// The Group Spread's title in Tunisian Arabic.
     #[serde(default)]
     pub title_ar: String,
     /// The Edition tied to this Group, if any (`friends` has none).
-    pub edition: Option<String>,
+    pub edition: Option<EditionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EditionDef {
-    pub key: String,
+    pub key: EditionKey,
     pub name: String,
     /// `None` = everyone (`ours`).
-    pub group: Option<String>,
+    pub group: Option<GroupKey>,
 }
 
 /// Every setting of the album, edited from the GUI. Stored as defaults + `SetSetting`
@@ -99,14 +175,14 @@ pub struct Settings {
     pub wedding_date: String,
     pub chapters: Vec<ChapterDef>,
     /// Photographer folder → Chapter keys, in order.
-    pub folder_chapters: BTreeMap<String, Vec<String>>,
+    pub folder_chapters: BTreeMap<String, Vec<ChapterKey>>,
     pub groups: Vec<GroupDef>,
     pub editions: Vec<EditionDef>,
     pub page_target: u32,
     pub shots_per_spread: f64,
     pub max_heroes: u32,
     pub couple_share: f64,
-    pub group_spread_chapter: String,
+    pub group_spread_chapter: ChapterKey,
     pub gate: Gate,
     pub shots: ShotSettings,
     pub face_min_height_frac: f64,
@@ -211,7 +287,7 @@ impl Default for Settings {
             ]),
         ];
         let folder = |name: &str, keys: &[&str]| {
-            (name.to_string(), keys.iter().map(|k| (*k).to_string()).collect())
+            (name.to_string(), keys.iter().map(|key| ChapterKey::from(*key)).collect())
         };
         Self {
             wedding_date: "2025-07-19".into(),
@@ -307,31 +383,39 @@ impl Default for Design {
 }
 
 impl Settings {
-    pub fn chapter_index(&self, key: &str) -> Option<usize> {
-        self.chapters.iter().position(|chapter| chapter.key == key)
+    /// Looks up a Chapter by its domain key.
+    ///
+    /// A key for another kind of entity cannot be passed:
+    /// ```compile_fail
+    /// use iris_core::model::{GroupKey, Settings};
+    /// let settings = Settings::default();
+    /// settings.chapter_index(&GroupKey::from("bride_family"));
+    /// ```
+    pub fn chapter_index(&self, key: &ChapterKey) -> Option<usize> {
+        self.chapters.iter().position(|chapter| &chapter.key == key)
     }
 
-    pub fn edition(&self, key: &str) -> Option<&EditionDef> {
-        self.editions.iter().find(|edition| edition.key == key)
+    pub fn edition(&self, key: &EditionKey) -> Option<&EditionDef> {
+        self.editions.iter().find(|edition| &edition.key == key)
     }
 
     /// Keeps the two serialized sides of the Edition ↔ Group relationship in sync.
     /// Edition definitions are authoritative; `ours` always includes everyone.
     pub fn normalize_group_editions(&mut self) {
-        let group_keys: std::collections::HashSet<&str> = self.groups.iter().map(|group| group.key.as_str()).collect();
+        let group_keys: std::collections::HashSet<&GroupKey> = self.groups.iter().map(|group| &group.key).collect();
         let mut assigned = std::collections::HashSet::new();
         for edition in &mut self.editions {
-            if edition.key == "ours" {
+            if edition.key == EditionKey::from("ours") {
                 edition.group = None;
                 continue;
             }
-            if edition.group.as_deref().is_some_and(|key| !group_keys.contains(key) || !assigned.insert(key.to_string())) {
+            if edition.group.as_ref().is_some_and(|key| !group_keys.contains(key) || !assigned.insert(key.clone())) {
                 edition.group = None;
             }
         }
 
         for group in &mut self.groups {
-            group.edition = self.editions.iter().find(|edition| edition.group.as_deref() == Some(group.key.as_str())).map(|edition| edition.key.clone());
+            group.edition = self.editions.iter().find(|edition| edition.group.as_ref() == Some(&group.key)).map(|edition| edition.key.clone());
         }
     }
 }
@@ -344,7 +428,7 @@ pub enum Override {
     // People: each one names a face of the Person it acts on.
     NamePerson { face: FaceId, name: String },
     SetRole { face: FaceId, role: Option<Role> },
-    SetGroup { face: FaceId, group: String, member: bool },
+    SetGroup { face: FaceId, group: GroupKey, member: bool },
     SetQuota { face: FaceId, quota: u32 },
     MergePersons { face: FaceId, into_face: FaceId },
     SplitFaces { faces: Vec<FaceId> },
@@ -354,13 +438,13 @@ pub enum Override {
     Pin { photo: PhotoId, on: bool },
     Ban { photo: PhotoId, on: bool },
     Hero { photo: PhotoId, on: bool },
-    MoveChapter { photo: PhotoId, chapter: String },
+    MoveChapter { photo: PhotoId, chapter: ChapterKey },
     SplitShot { photo: PhotoId },
     // Album
     LockSpread { spread: Spread },
     UnlockSpread { uid: u64 },
-    SetChapterSpreads { chapter: String, count: u32 },
-    MoveSpread { uid: u64, chapter: String, position: u32 },
+    SetChapterSpreads { chapter: ChapterKey, count: u32 },
+    MoveSpread { uid: u64, chapter: ChapterKey, position: u32 },
     // Text and settings
     SetText { key: String, value: String },
     SetSetting { key: String, value: serde_json::Value },
@@ -412,13 +496,13 @@ pub enum SpreadKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spread {
     pub uid: u64,
-    pub chapter: String,
+    pub chapter: ChapterKey,
     pub kind: SpreadKind,
     /// The Group of a Group Spread.
     #[serde(default)]
-    pub group: Option<String>,
+    pub group: Option<GroupKey>,
     /// Page template ids, left then right.
-    pub templates: [String; 2],
+    pub templates: [TemplateKey; 2],
     pub photos: Vec<PlacedPhoto>,
     /// Chapter title shown on this Spread (its first one).
     #[serde(default)]
@@ -449,7 +533,7 @@ pub struct Proposal {
     pub alternatives: BTreeMap<PhotoId, Vec<PhotoId>>,
     /// Persons whose Quota was not reached: (Person, Quota, Shots placed).
     #[serde(default)]
-    pub unmet_quotas: Vec<(i64, u32, u32)>,
+    pub unmet_quotas: Vec<(PersonId, u32, u32)>,
     /// Share of the selected Shots showing the Couple.
     #[serde(default)]
     pub couple_share: f64,
@@ -494,3 +578,48 @@ pub enum Conflict {
 pub const PAGE_W: f64 = 297.0;
 pub const PAGE_H: f64 = 210.0;
 pub const SPREAD_W: f64 = PAGE_W * 2.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_keys_and_person_ids_serialize_as_their_wire_values() {
+        assert_eq!(serde_json::to_value(ChapterKey::from("mairie_after")).unwrap(), serde_json::json!("mairie_after"));
+        assert_eq!(serde_json::to_value(GroupKey::from("bride_family")).unwrap(), serde_json::json!("bride_family"));
+        assert_eq!(serde_json::to_value(EditionKey::from("bride_parents")).unwrap(), serde_json::json!("bride_parents"));
+        assert_eq!(serde_json::to_value(TemplateKey::from("rows:2-3")).unwrap(), serde_json::json!("rows:2-3"));
+        assert_eq!(serde_json::to_value(PersonId(42)).unwrap(), serde_json::json!(42));
+
+        assert_eq!(serde_json::from_value::<ChapterKey>(serde_json::json!("mairie_after")).unwrap(), ChapterKey::from("mairie_after"));
+        assert_eq!(serde_json::from_value::<GroupKey>(serde_json::json!("bride_family")).unwrap(), GroupKey::from("bride_family"));
+        assert_eq!(serde_json::from_value::<EditionKey>(serde_json::json!("bride_parents")).unwrap(), EditionKey::from("bride_parents"));
+        assert_eq!(serde_json::from_value::<TemplateKey>(serde_json::json!("rows:2-3")).unwrap(), TemplateKey::from("rows:2-3"));
+        assert_eq!(serde_json::from_value::<PersonId>(serde_json::json!(42)).unwrap(), PersonId(42));
+    }
+
+    #[test]
+    fn domain_operations_match_chapter_edition_and_group_key_kinds() {
+        let settings = Settings::default();
+        let chapter = ChapterKey::from("mairie_after");
+        assert_eq!(settings.chapter_index(&chapter), Some(4));
+        assert_eq!(crate::layout::template_size(&TemplateKey::from("rows:2-3")), 5);
+
+        let bride_edition = settings.edition(&EditionKey::from("bride_parents")).unwrap();
+        let dad_edition = settings.edition(&EditionKey::from("dad")).unwrap();
+        let group_spread = Spread {
+            uid: 1,
+            chapter,
+            kind: SpreadKind::Group,
+            group: Some(GroupKey::from("bride_family")),
+            templates: [TemplateKey::from("hero"), TemplateKey::default()],
+            photos: Vec::new(),
+            title: true,
+            locked: false,
+            position: 0,
+        };
+
+        assert!(group_spread.in_edition(bride_edition));
+        assert!(!group_spread.in_edition(dad_edition));
+    }
+}

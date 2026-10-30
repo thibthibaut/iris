@@ -81,7 +81,7 @@
         <label>Group association
           <select name="group" {% if e.key == "ours" %}disabled{% endif %}>
             <option value="">Everyone</option>
-            {% for g in s.groups %}<option value="{{ g.key }}" {% if e.group == g.key %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+            {% for g in s.groups %}<option value="{{ g.key }}" {% if e.group == g.key.as_str() %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
           </select>
         </label>
         <button class="ghost">Save Edition</button>

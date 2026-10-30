@@ -12,7 +12,7 @@ use iris_core::{
     decisions::Eligibility,
     edit::apply_locks,
     layout::LayoutShot,
-    model::{Conflict, EditionDef, PAGE_W, PeopleOverrideKind, PhotoId, Proposal, Spread},
+    model::{ChapterKey, Conflict, EditionDef, EditionKey, PAGE_W, PeopleOverrideKind, PhotoId, Proposal, Spread},
     people::FaceMembership,
     select::{Candidate, GroupPick},
 };
@@ -115,7 +115,7 @@ pub fn album_input(state: &AlbumState, embeddings: &HashMap<PhotoId, Vec<f32>>) 
 /// The album as the user sees it now.
 pub fn current(db: &Database, state: &AlbumState) -> Result<Option<Proposal>> {
     let proposal: Option<Proposal> = db.blob("proposal")?;
-    let order: Vec<String> = state.decisions.settings.chapters.iter().map(|c| c.key.clone()).collect();
+    let order: Vec<ChapterKey> = state.decisions.settings.chapters.iter().map(|c| c.key.clone()).collect();
     Ok(proposal.map(|proposal| apply_locks(&proposal, &state.decisions.locked, &order)))
 }
 
@@ -170,7 +170,7 @@ pub fn preview(config: &Config, state: &AlbumState, spread: &Spread, numbers: (u
 }
 
 pub fn edition<'a>(state: &'a AlbumState, key: &str) -> Option<&'a EditionDef> {
-    state.decisions.settings.edition(key)
+    state.decisions.settings.edition(&EditionKey::from(key))
 }
 
 #[derive(Debug, Clone)]
@@ -267,7 +267,7 @@ pub fn warnings(state: &AlbumState, spread: &Spread) -> Vec<String> {
             }
             Conflict::MoveChapterOnLockedSpread { photo, chapter, .. } => {
                 let name = state.photo(photo).map_or_else(|| format!("Photo {photo}"), |p| p.file_name.clone());
-                let chapter = state.decisions.settings.chapters.iter().find(|item| item.key == chapter)
+                let chapter = state.decisions.settings.chapters.iter().find(|item| item.key.as_str() == chapter)
                     .map_or(chapter.as_str(), |item| item.title_fr.as_str());
                 out.push(format!("{name}: moved to {chapter}, but this Spread is Locked — unlock it and rebuild to apply the Chapter move"));
             }
